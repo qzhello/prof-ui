@@ -1,0 +1,6 @@
+node_modules/
+dist/
+output/
+.env
+*.exe
+.DS_Store
