@@ -1,16 +1,21 @@
 import axios from 'axios'
-import type { AnalysisResult, UploadedFile, APIResponse } from '../types'
+import type { AnalysisResult as AnalysisResultType, UploadedFile, APIResponse } from '../types'
 
 const api = axios.create({
   baseURL: '/api',
   timeout: 300000,
 })
 
+export interface AnalyzeResponse extends APIResponse {
+  result_url?: string
+  result_path?: string
+}
+
 export async function analyzeFiles(
   files: UploadedFile[],
   sourcePath: string,
   model?: string
-): Promise<AnalysisResult> {
+): Promise<{ result: AnalysisResultType; resultUrl?: string; resultPath?: string }> {
   const formData = new FormData()
 
   files.forEach((f) => {
@@ -25,7 +30,7 @@ export async function analyzeFiles(
     formData.append('model', model)
   }
 
-  const response = await api.post<APIResponse<AnalysisResult>>('/analyze', formData, {
+  const response = await api.post<AnalyzeResponse>('/analyze', formData, {
     headers: {
       'Content-Type': 'multipart/form-data',
     },
@@ -35,7 +40,33 @@ export async function analyzeFiles(
     throw new Error(response.data.error || 'Analysis failed')
   }
 
-  return response.data.data
+  return {
+    result: response.data.data,
+    resultUrl: response.data.result_url,
+    resultPath: response.data.result_path,
+  }
+}
+
+export interface PprofResponse extends APIResponse {
+  path?: string
+  url?: string
+  message?: string
+}
+
+export async function generatePprofImage(file: File): Promise<PprofResponse> {
+  const formData = new FormData()
+  formData.append('file', file)
+
+  const response = await api.post<PprofResponse>('/pprof/image', formData)
+  return response.data
+}
+
+export async function saveResultJSON(result: AnalysisResultType): Promise<string> {
+  const response = await api.post<{ success: boolean; result_path?: string; error?: string }>('/save-result', result)
+  if (!response.data.success) {
+    throw new Error(response.data.error || 'Failed to save result')
+  }
+  return response.data.result_path || ''
 }
 
 export async function healthCheck(): Promise<boolean> {
@@ -45,12 +76,6 @@ export async function healthCheck(): Promise<boolean> {
   } catch {
     return false
   }
-}
-
-// getApiKey returns the API key for streaming auth header.
-// In production this should come from env; here we expose it for the streaming fetch in App.vue.
-export function getApiKey(): string {
-  return ''
 }
 
 export { api }

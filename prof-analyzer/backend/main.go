@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
@@ -88,6 +89,12 @@ type Choice struct {
 	Message AIMessage `json:"message"`
 }
 
+// SSE event wrapper
+type SSEResult struct {
+	Event string `json:"event,omitempty"`
+	Data  string `json:"data,omitempty"`
+}
+
 var httpClient = &http.Client{}
 
 func main() {
@@ -97,6 +104,9 @@ func main() {
 	if port == "" {
 		port = "8080"
 	}
+
+	// Ensure output directory exists
+	os.MkdirAll("./output", 0755)
 
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.Default()
@@ -115,6 +125,7 @@ func main() {
 
 	r.POST("/api/analyze", handleAnalyze)
 	r.POST("/api/analyze/stream", handleAnalyzeStream)
+	r.POST("/api/save-result", handleSaveResult)
 	r.POST("/api/pprof/image", handlePprofImage)
 	r.GET("/api/health", handleHealth)
 
@@ -126,7 +137,26 @@ func handleHealth(c *gin.Context) {
 	c.JSON(200, gin.H{"status": "ok"})
 }
 
-// handlePprofImage runs `go tool pprof -png` on the uploaded file and returns the PNG image.
+// outputPath generates a timestamped file path under ./output
+func outputPath(prefix, ext string) string {
+	ts := time.Now().Format("20060102_150405")
+	return filepath.Join("output", fmt.Sprintf("%s_%s.%s", prefix, ts, ext))
+}
+
+// saveJSON saves data to a file and returns the file path
+func saveJSON(v interface{}, prefix, ext string) (string, error) {
+	data, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	path := outputPath(prefix, ext)
+	if err := os.WriteFile(path, data, 0644); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+// handlePprofImage runs `go tool pprof -png/-svg` and saves the output to ./output/
 func handlePprofImage(c *gin.Context) {
 	file, err := c.FormFile("file")
 	if err != nil {
@@ -139,10 +169,10 @@ func handlePprofImage(c *gin.Context) {
 		return
 	}
 
-	// Save to temp file
 	tmpDir := os.TempDir()
 	profPath := filepath.Join(tmpDir, "pprof_"+filepath.Base(file.Filename))
-	pngPath := filepath.Join(tmpDir, "pprof_out.png")
+	pngPath := outputPath("pprof", "png")
+	svgPath := outputPath("pprof", "svg")
 
 	f, err := file.Open()
 	if err != nil {
@@ -160,41 +190,135 @@ func handlePprofImage(c *gin.Context) {
 		return
 	}
 	defer os.Remove(profPath)
-	defer os.Remove(pngPath)
 
-	// Try different pprof formats
+	// Try PNG first, then SVG
 	var out []byte
-	formats := []string{"-png", "-svg"}
-	var lastErr error
+	savedPath := ""
 
-	for _, format := range formats {
+	for _, format := range []string{"-png", "-svg"} {
 		cmd := exec.Command("go", "tool", "pprof", format, profPath)
 		cmd.Dir = tmpDir
-		out, lastErr = cmd.Output()
-		if lastErr == nil {
+		out, err = cmd.Output()
+		if err == nil && len(out) > 0 {
+			if format == "-png" {
+				savedPath = pngPath
+			} else {
+				savedPath = svgPath
+			}
 			break
 		}
 	}
 
-	if lastErr != nil {
+	if savedPath == "" {
 		errMsg := strings.TrimSpace(string(out))
 		if errMsg == "" {
-			errMsg = lastErr.Error()
+			errMsg = err.Error()
 		}
 		c.JSON(400, gin.H{"error": "go tool pprof failed: " + errMsg})
 		return
 	}
 
-	if len(out) == 0 {
-		c.JSON(400, gin.H{"error": "pprof produced empty output, file format may not be supported"})
+	if err := os.WriteFile(savedPath, out, 0644); err != nil {
+		c.JSON(500, gin.H{"error": "failed to save pprof image: " + err.Error()})
 		return
 	}
 
-	c.Header("Content-Type", "image/png")
-	c.Data(200, "image/png", out)
+	// Return download URL relative to server root
+	downloadURL := "/" + savedPath
+	c.JSON(200, gin.H{
+		"success": true,
+		"path":    savedPath,
+		"url":     downloadURL,
+		"message": "图片已保存，可直接访问 " + downloadURL + " 下载",
+	})
 }
 
-// handleAnalyzeStream streams AI analysis as SSE.
+func handleAnalyze(c *gin.Context) {
+	model := os.Getenv("AI_MODEL")
+	if model == "" {
+		model = "gpt-4o"
+	}
+
+	apiKey := os.Getenv("AI_API_KEY")
+	baseURL := os.Getenv("AI_BASE_URL")
+	if baseURL == "" {
+		baseURL = "https://api.openai.com/v1"
+	}
+
+	form, err := c.MultipartForm()
+	if err != nil {
+		c.JSON(400, gin.H{"error": "failed to parse form: " + err.Error()})
+		return
+	}
+
+	files := form.File["files"]
+	if len(files) == 0 {
+		c.JSON(400, gin.H{"error": "no files uploaded"})
+		return
+	}
+
+	var fileContents []string
+	var fileNames []string
+	for _, f := range files {
+		fileNames = append(fileNames, f.Filename)
+		src, err := f.Open()
+		if err != nil {
+			c.JSON(500, gin.H{"error": "failed to read file"})
+			return
+		}
+		content, err := io.ReadAll(src)
+		src.Close()
+		if err != nil {
+			c.JSON(500, gin.H{"error": "failed to read file content"})
+			return
+		}
+		fileContents = append(fileContents, string(content))
+	}
+
+	sourcePath := c.PostForm("source_path")
+	combinedContent := buildPrompt(fileNames, fileContents, sourcePath)
+
+	analysis, err := callAI(apiKey, baseURL, model, combinedContent)
+	if err != nil {
+		c.JSON(500, gin.H{"error": "analysis failed: " + err.Error()})
+		return
+	}
+
+	// Save result to ./output/
+	resultPath, err := saveJSON(analysis, "analysis", "json")
+	if err != nil {
+		log.Printf("warning: failed to save analysis result: %v", err)
+	}
+
+	c.JSON(200, gin.H{
+		"success":    true,
+		"data":       analysis,
+		"result_url": "/" + resultPath,
+		"result_path": resultPath,
+	})
+}
+
+// handleSaveResult saves a complete analysis result JSON to ./output/
+func handleSaveResult(c *gin.Context) {
+	var result AnalysisResult
+	if err := c.ShouldBindJSON(&result); err != nil {
+		c.JSON(400, gin.H{"error": "invalid JSON: " + err.Error()})
+		return
+	}
+
+	resultPath, err := saveJSON(result, "analysis_stream", "json")
+	if err != nil {
+		c.JSON(500, gin.H{"error": "failed to save result: " + err.Error()})
+		return
+	}
+
+	c.JSON(200, gin.H{
+		"success":     true,
+		"result_path": resultPath,
+		"result_url":  "/" + resultPath,
+	})
+}
+
 func handleAnalyzeStream(c *gin.Context) {
 	model := os.Getenv("AI_MODEL")
 	baseURL := os.Getenv("AI_BASE_URL")
@@ -292,12 +416,9 @@ func handleAnalyzeStream(c *gin.Context) {
 			if strings.HasPrefix(line, "data: ") {
 				data := strings.TrimPrefix(line, "data: ")
 				data = strings.TrimSpace(data)
-				if data == "[DONE]" {
-					c.SSEvent("done", "")
-					c.Writer.Flush()
-					break
+				if data == "[DONE]" || data == "" {
+					continue
 				}
-				// Parse SSE data field
 				var sseData struct {
 					Choices []struct {
 						Delta struct {
@@ -315,65 +436,7 @@ func handleAnalyzeStream(c *gin.Context) {
 		}
 	}
 
-	c.SSEvent("done", "")
 	c.Writer.Flush()
-}
-
-func handleAnalyze(c *gin.Context) {
-	model := os.Getenv("AI_MODEL")
-	if model == "" {
-		model = "gpt-4o"
-	}
-
-	apiKey := os.Getenv("AI_API_KEY")
-	baseURL := os.Getenv("AI_BASE_URL")
-	if baseURL == "" {
-		baseURL = "https://api.openai.com/v1"
-	}
-
-	form, err := c.MultipartForm()
-	if err != nil {
-		c.JSON(400, gin.H{"error": "failed to parse form: " + err.Error()})
-		return
-	}
-
-	files := form.File["files"]
-	if len(files) == 0 {
-		c.JSON(400, gin.H{"error": "no files uploaded"})
-		return
-	}
-
-	var fileContents []string
-	var fileNames []string
-	for _, f := range files {
-		fileNames = append(fileNames, f.Filename)
-		src, err := f.Open()
-		if err != nil {
-			c.JSON(500, gin.H{"error": "failed to read file"})
-			return
-		}
-		content, err := io.ReadAll(src)
-		src.Close()
-		if err != nil {
-			c.JSON(500, gin.H{"error": "failed to read file content"})
-			return
-		}
-		fileContents = append(fileContents, string(content))
-	}
-
-	sourcePath := c.PostForm("source_path")
-	combinedContent := buildPrompt(fileNames, fileContents, sourcePath)
-
-	analysis, err := callAI(apiKey, baseURL, model, combinedContent)
-	if err != nil {
-		c.JSON(500, gin.H{"error": "analysis failed: " + err.Error()})
-		return
-	}
-
-	c.JSON(200, gin.H{
-		"success": true,
-		"data":    analysis,
-	})
 }
 
 func buildPrompt(fileNames, fileContents []string, sourcePath string) string {
@@ -485,7 +548,7 @@ func callAI(apiKey, baseURL, model, content string) (*AnalysisResult, error) {
 
 	var result AnalysisResult
 	if err := json.Unmarshal([]byte(aiContent), &result); err != nil {
-		return nil, fmt.Errorf("failed to parse AI response as JSON: %w (content: %s)", err, aiContent[:min(200, len(aiContent))])
+		return nil, fmt.Errorf("failed to parse AI response as JSON: %w (content preview: %s)", err, aiContent[:min(200, len(aiContent))])
 	}
 
 	return &result, nil
