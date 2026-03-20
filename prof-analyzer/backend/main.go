@@ -148,22 +148,18 @@ func saveJSON(v interface{}, prefix, ext string) (string, error) {
 }
 
 // runGoToolPprof saves the profile and runs `go tool pprof -text` to get human-readable output.
-// It writes to a temp text file and reads back the result to avoid TTY/format issues.
 func runGoToolPprof(rawData []byte, filename string) (string, bool, error) {
 	tmpDir := filepath.Join(".", "tmp")
 	if err := os.MkdirAll(tmpDir, 0755); err != nil {
 		return "", false, fmt.Errorf("failed to create tmp dir: %w", err)
 	}
 	profPath := filepath.Join(tmpDir, "pprof_"+filepath.Base(filename))
-	textOutPath := filepath.Join(tmpDir, "pprof_text_"+filepath.Base(filename)+".txt")
-
 	if err := os.WriteFile(profPath, rawData, 0644); err != nil {
 		return "", false, fmt.Errorf("failed to write temp file: %w", err)
 	}
 	defer os.Remove(profPath)
-	defer os.Remove(textOutPath)
 
-	// Find go binary and set up environment
+	// Find go binary
 	goBin, err := exec.LookPath("go")
 	if err != nil {
 		log.Printf("[ERROR] go not found in PATH: %v", err)
@@ -171,40 +167,70 @@ func runGoToolPprof(rawData []byte, filename string) (string, bool, error) {
 		return hex, false, fmt.Errorf("go not found in PATH")
 	}
 
-	gorootCmd := exec.Command(goBin, "env", "GOROOT")
-	gorootOut, _ := gorootCmd.Output()
-	goroot := strings.TrimSpace(string(gorootOut))
-	env := os.Environ()
-	if goroot != "" {
-		env = append(env, "GOROOT="+goroot)
+	// Get GOTOOLDIR to find the actual pprof tool path
+	gotoolDirCmd := exec.Command(goBin, "env", "GOTOOLDIR")
+	gotoolDirOut, err := gotoolDirCmd.Output()
+	gotoolDir := strings.TrimSpace(string(gotoolDirOut))
+	log.Printf("[INFO] go binary: %s, GOTOOLDIR: %s", goBin, gotoolDir)
+
+	// pprof tool is at $GOTOOLDIR/pprof
+	var pprofBin string
+	if gotoolDir != "" {
+		pprofBin = filepath.Join(gotoolDir, "pprof")
+		if _, err := os.Stat(pprofBin); err == nil {
+			log.Printf("[INFO] pprof tool found at: %s", pprofBin)
+		} else {
+			pprofBin = ""
+		}
 	}
 
-	// Use -text -output to write directly to file, bypassing TTY issues
-	cmd := exec.Command(goBin, "tool", "pprof", "-text", "-output", textOutPath, profPath)
+	// Build clean environment
+	env := os.Environ()
+	if gotoolDir != "" {
+		env = append(env, "GOTOOLDIR="+gotoolDir)
+	}
+
+	var out []byte
+	var cmdErr error
+
+	// Method 1: call pprof binary directly via GOTOOLDIR
+	if pprofBin != "" {
+		cmd := exec.Command(pprofBin, "-text", profPath)
+		cmd.Env = env
+		cmd.Dir = tmpDir
+		out, cmdErr = cmd.CombinedOutput()
+		if cmdErr == nil && len(out) > 0 {
+			result := strings.TrimSpace(string(out))
+			if isPrintableASCII(result) {
+				log.Printf("[INFO] pprof -text succeeded via direct binary, %d bytes", len(result))
+				return result, true, nil
+			}
+			log.Printf("[WARN] pprof direct output not readable ASCII")
+		} else {
+			log.Printf("[WARN] pprof binary failed: %v", cmdErr)
+		}
+	}
+
+	// Method 2: go tool pprof -text
+	cmd := exec.Command(goBin, "tool", "pprof", "-text", profPath)
 	cmd.Env = env
 	cmd.Dir = tmpDir
-	outBytes, err := cmd.CombinedOutput()
-	outStr := string(outBytes)
-	log.Printf("[INFO] go tool pprof -text -output: err=%v output_len=%d output=%q", err, len(outStr), outStr)
-
-	// Read back the text output file
-	textOut, err := os.ReadFile(textOutPath)
-	if err == nil && len(textOut) > 0 {
-		result := string(textOut)
+	out, cmdErr = cmd.CombinedOutput()
+	if cmdErr == nil && len(out) > 0 {
+		result := strings.TrimSpace(string(out))
 		if isPrintableASCII(result) {
-			log.Printf("[INFO] pprof text file read: %d bytes", len(result))
+			log.Printf("[INFO] go tool pprof -text succeeded, %d bytes", len(result))
 			return result, true, nil
 		}
-		log.Printf("[WARN] pprof text file not readable ASCII, falling back")
 	}
 
-	// Fallback: try -raw which outputs proto in text format
+	// Method 3: go tool pprof -raw
 	cmd = exec.Command(goBin, "tool", "pprof", "-raw", profPath)
 	cmd.Env = env
 	cmd.Dir = tmpDir
-	rawOut, err := cmd.CombinedOutput()
-	if err == nil && len(rawOut) > 0 {
-		result := parsePprofRawOutput(string(rawOut))
+	out, cmdErr = cmd.CombinedOutput()
+	if cmdErr == nil && len(out) > 0 {
+		result := parsePprofRawOutput(string(out))
 		if result != "" {
 			log.Printf("[INFO] pprof -raw parsed: %d bytes", len(result))
 			return result, true, nil
@@ -213,7 +239,7 @@ func runGoToolPprof(rawData []byte, filename string) (string, bool, error) {
 
 	// Last resort: hex dump
 	hex := formatHexDump(rawData)
-	log.Printf("[WARN] pprof conversion failed, using hex dump fallback")
+	log.Printf("[WARN] all pprof methods failed, using hex dump")
 	return hex, false, nil
 }
 
