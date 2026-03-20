@@ -106,10 +106,11 @@ async function startStreamingAnalysis() {
             streamingOutput.value += data
           } else if (currentEvent === 'error') {
             errorMessage.value = data
+          } else {
+            // Fallback: data without event prefix, treat as chunk
+            streamingOutput.value += data
           }
-        }
-        // reset event after processing
-        if (line === '' || line.startsWith('event: ')) {
+        } else if (line === '') {
           currentEvent = ''
         }
       }
