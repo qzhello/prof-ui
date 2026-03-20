@@ -108,10 +108,10 @@ function updateSourcePath(e: Event) {
       :class="[
         'relative border-2 border-dashed rounded-xl p-12 text-center cursor-pointer transition-all duration-200',
         isDragging
-          ? 'border-primary-500 bg-primary-50'
+          ? 'border-primary-500 bg-primary-50 dark:bg-primary-900/20'
           : hasFiles
-            ? 'border-gray-300 bg-gray-50 hover:border-primary-400'
-            : 'border-gray-300 bg-gray-50 hover:border-primary-400'
+            ? 'border-gray-300 bg-gray-50 dark:bg-gray-900 dark:bg-gray-900 hover:border-primary-400'
+            : 'border-gray-300 bg-gray-50 dark:bg-gray-900 dark:bg-gray-900 hover:border-primary-400'
       ]"
     >
       <input
@@ -124,48 +124,48 @@ function updateSourcePath(e: Event) {
       />
 
       <div v-if="!hasFiles" class="space-y-4">
-        <div class="w-16 h-16 mx-auto bg-gray-100 rounded-full flex items-center justify-center">
+        <div class="w-16 h-16 mx-auto bg-gray-100 dark:bg-gray-700 rounded-full flex items-center justify-center">
           <svg class="w-8 h-8 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
           </svg>
         </div>
         <div>
-          <p class="text-lg font-medium text-gray-700">拖拽 PROF 文件到此处</p>
-          <p class="text-sm text-gray-500 mt-1">或点击选择文件</p>
+          <p class="text-lg font-medium text-gray-700 dark:text-gray-200">拖拽 PROF 文件到此处</p>
+          <p class="text-sm text-gray-500 dark:text-gray-400 mt-1">或点击选择文件</p>
           <p class="text-xs text-gray-400 mt-2">支持 .prof, .pprof, .json, .log, .txt, .zip 格式</p>
         </div>
       </div>
 
       <div v-else class="space-y-3">
         <div class="w-12 h-12 mx-auto bg-primary-100 rounded-full flex items-center justify-center">
-          <svg class="w-6 h-6 text-primary-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <svg class="w-6 h-6 text-primary-600 dark:text-primary-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
           </svg>
         </div>
-        <p class="text-primary-600 font-medium">点击添加更多文件</p>
+        <p class="text-primary-600 dark:text-primary-400 font-medium">点击添加更多文件</p>
       </div>
     </div>
 
     <!-- Selected Files List -->
     <div v-if="hasFiles" class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-      <div class="px-4 py-3 border-b border-gray-200 bg-gray-50">
-        <h3 class="text-sm font-medium text-gray-700">已选择 {{ files.length }} 个文件</h3>
+      <div class="px-4 py-3 border-b border-gray-200 bg-gray-50 dark:bg-gray-900">
+        <h3 class="text-sm font-medium text-gray-700 dark:text-gray-200">已选择 {{ files.length }} 个文件</h3>
       </div>
       <ul class="divide-y divide-gray-100">
         <li
           v-for="(file, index) in files"
           :key="file.name"
-          class="px-4 py-3 flex items-center justify-between hover:bg-gray-50 transition-colors"
+          class="px-4 py-3 flex items-center justify-between hover:bg-gray-50 dark:bg-gray-900 transition-colors"
         >
           <div class="flex items-center space-x-3 min-w-0">
-            <div class="w-10 h-10 bg-gray-100 rounded-lg flex items-center justify-center flex-shrink-0">
-              <svg class="w-5 h-5 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <div class="w-10 h-10 bg-gray-100 dark:bg-gray-700 rounded-lg flex items-center justify-center flex-shrink-0">
+              <svg class="w-5 h-5 text-gray-500 dark:text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
               </svg>
             </div>
             <div class="min-w-0">
-              <p class="text-sm font-medium text-gray-900 truncate">{{ file.name }}</p>
-              <p class="text-xs text-gray-500">{{ formatFileSize(file.size) }}</p>
+              <p class="text-sm font-medium text-gray-900 dark:text-white truncate">{{ file.name }}</p>
+              <p class="text-xs text-gray-500 dark:text-gray-400">{{ formatFileSize(file.size) }}</p>
             </div>
           </div>
           <button
@@ -184,17 +184,17 @@ function updateSourcePath(e: Event) {
     <div class="bg-white rounded-xl shadow-sm border border-gray-200">
       <button
         @click="toggleSourcePath"
-        class="w-full px-4 py-3 flex items-center justify-between hover:bg-gray-50 transition-colors"
+        class="w-full px-4 py-3 flex items-center justify-between hover:bg-gray-50 dark:bg-gray-900 transition-colors"
       >
         <div class="flex items-center space-x-3">
-          <div class="w-10 h-10 bg-gray-100 rounded-lg flex items-center justify-center">
-            <svg class="w-5 h-5 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <div class="w-10 h-10 bg-gray-100 dark:bg-gray-700 rounded-lg flex items-center justify-center">
+            <svg class="w-5 h-5 text-gray-500 dark:text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
             </svg>
           </div>
           <div class="text-left">
-            <p class="text-sm font-medium text-gray-700">本地源码路径</p>
-            <p class="text-xs text-gray-500">可选，用于更精准的分析</p>
+            <p class="text-sm font-medium text-gray-700 dark:text-gray-200">本地源码路径</p>
+            <p class="text-xs text-gray-500 dark:text-gray-400">可选，用于更精准的分析</p>
           </div>
         </div>
         <svg
@@ -229,7 +229,7 @@ function updateSourcePath(e: Event) {
           'py-3 px-4 rounded-xl text-sm font-semibold transition-all duration-200 flex items-center justify-center space-x-2',
           hasFiles && !isAnalyzing && !isStreaming
             ? 'bg-primary-600 text-white hover:bg-primary-700 shadow-sm hover:shadow-md'
-            : 'bg-gray-100 text-gray-400 cursor-not-allowed'
+            : 'bg-gray-100 dark:bg-gray-700 text-gray-400 cursor-not-allowed'
         ]"
       >
         <span v-if="isAnalyzing" class="flex items-center space-x-2">
@@ -255,7 +255,7 @@ function updateSourcePath(e: Event) {
           'py-3 px-4 rounded-xl text-sm font-semibold transition-all duration-200 flex items-center justify-center space-x-2',
           hasFiles && !isAnalyzing && !isStreaming
             ? 'bg-purple-600 text-white hover:bg-purple-700 shadow-sm hover:shadow-md'
-            : 'bg-gray-100 text-gray-400 cursor-not-allowed'
+            : 'bg-gray-100 dark:bg-gray-700 text-gray-400 cursor-not-allowed'
         ]"
       >
         <span v-if="isStreaming" class="flex items-center space-x-2">
@@ -281,7 +281,7 @@ function updateSourcePath(e: Event) {
           'py-3 px-4 rounded-xl text-sm font-semibold transition-all duration-200 flex items-center justify-center space-x-2',
           hasFiles && !isAnalyzing && !isStreaming
             ? 'bg-orange-500 text-white hover:bg-orange-600 shadow-sm hover:shadow-md'
-            : 'bg-gray-100 text-gray-400 cursor-not-allowed'
+            : 'bg-gray-100 dark:bg-gray-700 text-gray-400 cursor-not-allowed'
         ]"
       >
         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">

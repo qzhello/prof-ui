@@ -15,6 +15,23 @@ async function exportToPDF() {
 
   try {
     const html2pdf = (await import('html2pdf.js')).default
+    const html2canvas = (await import('html2canvas')).default
+
+    // Capture chart images first
+    const chartContainers = document.querySelectorAll('.chart-container')
+    const chartImages: string[] = []
+    for (const container of Array.from(chartContainers)) {
+      try {
+        const canvas = await html2canvas(container as HTMLElement, {
+          scale: 2,
+          useCORS: true,
+          backgroundColor: '#ffffff'
+        })
+        chartImages.push(canvas.toDataURL('image/png'))
+      } catch {
+        chartImages.push('')
+      }
+    }
 
     const element = document.getElementById('pdf-content')
     if (!element) {
@@ -34,11 +51,24 @@ async function exportToPDF() {
         unit: 'mm',
         format: 'a4',
         orientation: 'portrait'
-      }
+      },
+      pagebreak: { mode: ['avoid-all', 'css', 'legacy'] }
     }
 
     exportStatus.value = '正在渲染...'
     await html2pdf().set(opt).from(element).save()
+
+    // If we captured charts, also save them separately
+    if (chartImages.length > 0) {
+      chartImages.forEach((img, i) => {
+        if (img) {
+          const a = document.createElement('a')
+          a.href = img
+          a.download = `chart-${i + 1}.png`
+          a.click()
+        }
+      })
+    }
 
     exportStatus.value = 'PDF 已下载'
     setTimeout(() => {
@@ -62,10 +92,10 @@ function formatPercentage(value: number): string {
 <template>
   <div class="space-y-6">
     <!-- Preview Card -->
-    <div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+    <div class="bg-white dark:bg-gray-800 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-700 overflow-hidden">
       <div class="px-6 py-4 border-b border-gray-100 bg-gray-50">
-        <h3 class="text-lg font-semibold text-gray-900">PDF 报告预览</h3>
-        <p class="text-sm text-gray-500 mt-1">点击下方按钮导出完整报告</p>
+        <h3 class="text-lg font-semibold text-gray-900 dark:text-white">PDF 报告预览</h3>
+        <p class="text-sm text-gray-500 dark:text-gray-400 mt-1">点击下方按钮导出完整报告</p>
       </div>
 
       <!-- Hidden content for PDF generation -->
@@ -178,7 +208,7 @@ function formatPercentage(value: number): string {
 
       <!-- Export Preview -->
       <div class="p-6">
-        <div class="bg-gray-50 rounded-xl p-4 mb-6">
+        <div class="bg-gray-50 dark:bg-gray-900 rounded-xl p-4 mb-6">
           <div class="flex items-center space-x-3 mb-4">
             <div class="w-10 h-10 bg-primary-100 rounded-lg flex items-center justify-center">
               <svg class="w-5 h-5 text-primary-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -186,22 +216,22 @@ function formatPercentage(value: number): string {
               </svg>
             </div>
             <div>
-              <p class="text-sm font-medium text-gray-900">性能分析报告</p>
-              <p class="text-xs text-gray-500">包含分析摘要、指标、根因、解决方案和热点</p>
+              <p class="text-sm font-medium text-gray-900 dark:text-white">性能分析报告</p>
+              <p class="text-xs text-gray-500 dark:text-gray-400">包含分析摘要、指标、根因、解决方案和热点</p>
             </div>
           </div>
           <div class="grid grid-cols-3 gap-3 text-center">
             <div class="bg-white rounded-lg p-3">
-              <p class="text-lg font-bold text-gray-900">{{ result.chain.length }}</p>
-              <p class="text-xs text-gray-500">调用链路</p>
+              <p class="text-lg font-bold text-gray-900 dark:text-white">{{ result.chain.length }}</p>
+              <p class="text-xs text-gray-500 dark:text-gray-400">调用链路</p>
             </div>
             <div class="bg-white rounded-lg p-3">
-              <p class="text-lg font-bold text-gray-900">{{ result.solutions.length }}</p>
-              <p class="text-xs text-gray-500">解决建议</p>
+              <p class="text-lg font-bold text-gray-900 dark:text-white">{{ result.solutions.length }}</p>
+              <p class="text-xs text-gray-500 dark:text-gray-400">解决建议</p>
             </div>
             <div class="bg-white rounded-lg p-3">
-              <p class="text-lg font-bold text-gray-900">{{ result.hotspots.length }}</p>
-              <p class="text-xs text-gray-500">性能热点</p>
+              <p class="text-lg font-bold text-gray-900 dark:text-white">{{ result.hotspots.length }}</p>
+              <p class="text-xs text-gray-500 dark:text-gray-400">性能热点</p>
             </div>
           </div>
         </div>

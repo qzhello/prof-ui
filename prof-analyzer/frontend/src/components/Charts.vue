@@ -257,24 +257,24 @@ watch(() => props.result, () => {
   <div class="space-y-6">
     <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
       <!-- Pie Chart -->
-      <div class="bg-white rounded-2xl p-6 shadow-sm border border-gray-100">
+      <div class="chart-container bg-white rounded-2xl p-6 shadow-sm border border-gray-100 dark:bg-gray-800 dark:border-gray-700">
         <div ref="pieChartRef" class="w-full h-80"></div>
       </div>
 
       <!-- Bar Chart -->
-      <div class="bg-white rounded-2xl p-6 shadow-sm border border-gray-100">
+      <div class="chart-container bg-white rounded-2xl p-6 shadow-sm border border-gray-100 dark:bg-gray-800 dark:border-gray-700">
         <div ref="barChartRef" class="w-full h-80"></div>
       </div>
     </div>
 
     <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
       <!-- Hotspot Chart -->
-      <div class="bg-white rounded-2xl p-6 shadow-sm border border-gray-100">
+      <div class="chart-container bg-white rounded-2xl p-6 shadow-sm border border-gray-100 dark:bg-gray-800 dark:border-gray-700">
         <div ref="hotspotChartRef" class="w-full h-80"></div>
       </div>
 
       <!-- Tree Chart -->
-      <div class="bg-white rounded-2xl p-6 shadow-sm border border-gray-100">
+      <div class="chart-container bg-white rounded-2xl p-6 shadow-sm border border-gray-100 dark:bg-gray-800 dark:border-gray-700">
         <div ref="treeChartRef" class="w-full h-80"></div>
       </div>
     </div>
