@@ -1,23 +1,30 @@
 # PROF Analyzer
 
-智能性能分析工具 - 导入 PROF 文件，AI 分析性能瓶颈，输出可视化报告
+智能性能分析工具。导入 PROF 文件后，后端调用 `go tool pprof` 提取文本，再由 AI 生成流式 Markdown 性能分析报告，并支持导出 PDF 与生成 pprof 火焰图。
 
 ## 功能特性
 
 - 📁 支持上传多个 PROF 文件 (pprof, json, log 等格式)
-- 🤖 AI 智能分析，识别性能问题
-- 🔗 清晰的调用链路展示
-- ⚠️ 问题根因分析
-- 💡 解决方案建议
-- 📊 可视化图表 (饼图、柱状图、调用树)
+- 🤖 AI 流式分析，实时返回 Markdown 报告
+- 🔗 调用链路、问题根因、优化建议一体化输出
+- 🧠 可选读取本地源码，辅助定位热点代码
+- 🖼️ 支持生成 pprof 火焰图图片
 - 📄 PDF 报告导出
+- 💾 分析结果自动保存到 `output/`
 
 ## 技术栈
 
 - **后端**: Go + Gin
 - **前端**: Vue 3 + Vite + TypeScript + TailwindCSS
-- **图表**: ECharts
+- **可视化**: pprof 图片 + Markdown 渲染
 - **AI**: OpenAI API (GPT-4o)
+
+## 环境要求
+
+- Go 1.21+
+- Node.js 18+ 建议
+- 已正确设置 `GOROOT`
+- 可用的 AI API Key
 
 ## 快速开始
 
@@ -28,17 +35,32 @@
 ```env
 AI_API_KEY=your_api_key_here
 AI_MODEL=gpt-4o
+OUTPUT_LANGUAGE=中文
+PORT=8181
+GOROOT=/path/to/your/go
 ```
+
+说明：
+
+- `PORT=8181` 是为了和当前前端开发代理配置保持一致
+- `OUTPUT_LANGUAGE` 用于指定分析报告语言，默认值为 `中文`
+- 如果你改了后端端口，也要同步修改 [frontend/vite.config.ts](/Users/quzhihao/GolandProjects/prof-ui/prof-analyzer/frontend/vite.config.ts)
+- 未设置 `GOROOT` 时，`go tool pprof` 和 pprof 图片生成功能会失败
 
 ### 2. 启动后端
 
 ```bash
 cd backend
 go mod tidy
-go run main.go
+go run .
 ```
 
-后端服务将在 `http://localhost:8080` 启动。
+后端服务将在 `http://localhost:8181` 启动。
+
+说明：
+
+- 推荐使用 `go run .`
+- 如果你习惯执行 `go run main.go`，当前也可以正常工作，因为系统提示词已移动到独立子包
 
 ### 3. 启动前端
 
@@ -62,44 +84,63 @@ npm run build
 ## 生产部署
 
 ```bash
-# 构建前端
-cd frontend && npm run build && cd ..
+cd frontend
+npm run build
 
-# 启动后端 (会服务 frontend/dist)
-cd backend && go build -o prof-analyzer && ./prof-analyzer
+cd ../backend
+go build -o prof-analyzer
+./prof-analyzer
 ```
+
+生产模式下，后端会直接服务 `frontend/dist`。
 
 ## API 接口
 
-### POST /api/analyze
+### POST /api/analyze/stream
 
-上传 PROF 文件进行分析
+上传 PROF 文件并流式返回 Markdown 分析结果。
 
 **Form Data:**
 - `files`: 文件 (多个)
 - `source_path`: 本地源码路径 (可选)
-- `model`: AI 模型名称 (可选)
 
-**响应:**
-```json
-{
-  "success": true,
-  "data": {
-    "summary": "分析摘要",
-    "chain": [...],
-    "root_cause": "问题根因",
-    "solutions": [...],
-    "metrics": {...},
-    "charts": [...],
-    "hotspots": [...],
-    "call_tree": [...]
-  }
-}
-```
+**SSE 事件:**
+- `chunk`: 增量 Markdown 内容
+- `saved`: 最终保存的结果文件路径
+- `error`: 错误信息
+
+### POST /api/pprof/image
+
+上传单个 profile 文件，生成 pprof 火焰图 PNG。
+
+**Form Data:**
+- `file`: 单个 profile 文件
+
+**响应字段:**
+- `success`: 是否成功
+- `path`: 本地保存路径
+- `url`: 前端可访问地址
+
+### POST /api/pprof/text
+
+上传单个 profile 文件，返回 `go tool pprof` 文本分析结果。
 
 ### GET /api/health
 
-健康检查
+健康检查。
+
+## 使用说明
+
+1. 在“上传文件”页选择一个或多个 profile 文件。
+2. 如需结合源码定位，可展开并填写“本地源码路径”。
+3. 点击“开始分析”，查看流式 Markdown 报告。
+4. 如需火焰图，点击“生成 Pprof 图片”。
+5. 在“导出PDF”页导出当前分析报告。
+
+说明：
+
+- PDF 导出依赖当前内存中的分析结果，先执行一次分析再导出
+- “可视化”页当前展示的是 pprof 火焰图，不是结构化 ECharts 图表
 
 ## 示例文件
 
@@ -166,4 +207,4 @@ flat  flat%   sum%     cum     cum%  function
 [0.092s] Response sent (92ms)
 ```
 
-上传任意上述格式文件，AI 将自动分析并输出包含**调用链路**、**问题根因**、**解决建议**的完整报告。
+上传任意上述格式文件，AI 将自动分析并输出包含**调用链路**、**问题根因**、**性能热点**、**解决建议**的完整 Markdown 报告。

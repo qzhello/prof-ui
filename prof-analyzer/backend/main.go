@@ -10,61 +10,17 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"time"
+
+	"prof-analyzer/prompts"
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
 )
-
-type AnalysisResult struct {
-	Summary   string      `json:"summary"`
-	Chain     []ChainLink `json:"chain"`
-	RootCause string      `json:"root_cause"`
-	Solutions []string    `json:"solutions"`
-	Metrics   Metrics     `json:"metrics"`
-	Charts    []ChartData `json:"charts"`
-	Hotspots  []Hotspot   `json:"hotspots"`
-	CallTree  []CallNode  `json:"call_tree"`
-}
-
-type ChainLink struct {
-	From        string `json:"from"`
-	To          string `json:"to"`
-	Description string `json:"description"`
-	TimeCost    string `json:"time_cost"`
-}
-
-type Metrics struct {
-	TotalTime   string `json:"total_time"`
-	MemoryUsage string `json:"memory_usage"`
-	CPUUsage    string `json:"cpu_usage"`
-	Goroutines  int    `json:"goroutines"`
-	GCCount     int    `json:"gc_count"`
-}
-
-type ChartData struct {
-	Type string      `json:"type"`
-	Name string      `json:"name"`
-	Data interface{} `json:"data"`
-}
-
-type Hotspot struct {
-	Function   string  `json:"function"`
-	Location   string  `json:"location"`
-	TimeCost   string  `json:"time_cost"`
-	Percentage float64 `json:"percentage"`
-	Calls      int     `json:"calls"`
-}
-
-type CallNode struct {
-	Name     string     `json:"name"`
-	TimeCost string     `json:"time_cost"`
-	Calls    int        `json:"calls"`
-	Children []CallNode `json:"children,omitempty"`
-}
 
 type AIRequest struct {
 	Model    string      `json:"model"`
@@ -75,14 +31,6 @@ type AIRequest struct {
 type AIMessage struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
-}
-
-type AIResponse struct {
-	Choices []Choice `json:"choices"`
-}
-
-type Choice struct {
-	Message AIMessage `json:"message"`
 }
 
 var httpClient = &http.Client{}
@@ -114,10 +62,9 @@ func main() {
 		c.File("./frontend/dist/index.html")
 	})
 
-	r.POST("/api/analyze", handleAnalyze)
 	r.POST("/api/analyze/stream", handleAnalyzeStream)
-	r.POST("/api/save-result", handleSaveResult)
 	r.POST("/api/pprof/text", handlePprofText)
+	r.POST("/api/pprof/image", handlePprofImage)
 	r.GET("/api/health", handleHealth)
 
 	log.Printf("Server starting on :%s", port)
@@ -134,18 +81,6 @@ func handleHealth(c *gin.Context) {
 func outputPath(prefix, ext string) string {
 	ts := time.Now().Format("20060102_150405")
 	return filepath.Join("output", fmt.Sprintf("%s_%s.%s", prefix, ts, ext))
-}
-
-func saveJSON(v interface{}, prefix, ext string) (string, error) {
-	data, err := json.MarshalIndent(v, "", "  ")
-	if err != nil {
-		return "", err
-	}
-	path := outputPath(prefix, ext)
-	if err := os.WriteFile(path, data, 0644); err != nil {
-		return "", err
-	}
-	return path, nil
 }
 
 // runGoToolPprof saves the profile and runs `go tool pprof -text` to get human-readable output.
@@ -235,6 +170,171 @@ func parsePprofRawOutput(raw string) string {
 	return ""
 }
 
+// extractSourceFiles extracts unique file paths from pprof text output.
+// It looks for patterns like "file.go:123" or "/path/to/file.go:456".
+func extractSourceFiles(pprofText string) []string {
+	// Match patterns like "file.go:123" or "/path/to/file.go:456"
+	// The file path can contain word characters, dots, slashes, hyphens
+	re := regexp.MustCompile(`([\w\-./]+):(\d+)`)
+	matches := re.FindAllStringSubmatch(pprofText, -1)
+
+	seen := make(map[string]bool)
+	var files []string
+
+	for _, match := range matches {
+		if len(match) < 2 {
+			continue
+		}
+		filePath := match[1]
+		// Filter out obviously non-Go source files and numeric-only paths
+		if strings.HasSuffix(filePath, ".go") && !seen[filePath] {
+			// Skip if it looks like a standard library path without source
+			if !strings.Contains(filePath, "$") && !strings.HasPrefix(filePath, "built-in") {
+				seen[filePath] = true
+				files = append(files, filePath)
+			}
+		}
+	}
+
+	return files
+}
+
+// extractTopFunctions extracts function names from pprof text output.
+// It returns the top N functions sorted by cumulative percentage.
+func extractTopFunctions(pprofText string, maxFuncs int) []string {
+	lines := strings.Split(pprofText, "\n")
+	var functions []string
+	funcRe := regexp.MustCompile(`^\s*[\d.]+[a-z]*s\s+[\d.]+%\s+[\d.]+%\s+([\w/.@]+)`)
+
+	seen := make(map[string]bool)
+	for _, line := range lines {
+		matches := funcRe.FindStringSubmatch(line)
+		if len(matches) >= 2 {
+			funcName := matches[1]
+			// Skip runtime/internal/standard library functions
+			if !seen[funcName] && !strings.HasPrefix(funcName, "internal/runtime") &&
+				!strings.HasPrefix(funcName, "runtime.") && !strings.HasPrefix(funcName, "internal/poll") &&
+				!strings.HasPrefix(funcName, "internal/syscall") && !strings.HasPrefix(funcName, "syscall.") &&
+				!strings.HasPrefix(funcName, "hash/crc32") && !strings.HasPrefix(funcName, "bytes.") &&
+				!strings.HasPrefix(funcName, "strings.") && !strings.HasPrefix(funcName, "io.") &&
+				!strings.HasPrefix(funcName, "bufio.") && !strings.HasPrefix(funcName, "net/http") &&
+				!strings.HasPrefix(funcName, "mime/") && !strings.HasPrefix(funcName, "os.") &&
+				!strings.HasPrefix(funcName, "time.") && !strings.HasPrefix(funcName, "fmt.") &&
+				!strings.HasPrefix(funcName, "math/") && !strings.HasPrefix(funcName, "strconv.") &&
+				!strings.HasPrefix(funcName, "unicode.") && !strings.HasPrefix(funcName, "sort.") &&
+				!strings.HasPrefix(funcName, "container/") && !strings.HasPrefix(funcName, "reflect.") &&
+				!strings.HasPrefix(funcName, "sync.") && !strings.HasPrefix(funcName, "errors.") &&
+				!strings.HasPrefix(funcName, "path.") && !strings.HasPrefix(funcName, "filepath.") &&
+				!strings.HasPrefix(funcName, "io/ioutil") && !strings.HasPrefix(funcName, "log.") &&
+				!strings.HasPrefix(funcName, "encoding/") && !strings.HasPrefix(funcName, "context.") &&
+				!strings.HasPrefix(funcName, "crypto/") && !strings.HasPrefix(funcName, "compress/") &&
+				!strings.HasPrefix(funcName, "archive/") && !strings.HasPrefix(funcName, "vendor/") &&
+				!strings.Contains(funcName, "$") && funcName != "???" {
+				seen[funcName] = true
+				functions = append(functions, funcName)
+				if len(functions) >= maxFuncs {
+					break
+				}
+			}
+		}
+	}
+	return functions
+}
+
+// convertFuncNamesToFiles converts function names to potential file paths.
+// e.g., github.com/seaweedfs/seaweedfs/weed/storage/needle.ParseUpload -> weed/storage/needle.go
+func convertFuncNamesToFiles(funcNames []string) []string {
+	seen := make(map[string]bool)
+	var files []string
+
+	for _, funcName := range funcNames {
+		// Split by "/" to get package path components
+		parts := strings.Split(funcName, "/")
+		if len(parts) < 3 {
+			continue
+		}
+
+		// Look for the last part that looks like a file (contains dot or is followed by func name)
+		// Pattern: github.com/org/project/package/file.Package/func or github.com/org/project/package/file.go
+		for i := len(parts) - 1; i >= 0; i-- {
+			part := parts[i]
+			// Skip domain parts (github.com, go.uber.io, etc.)
+			if i < 2 {
+				break
+			}
+			// If part ends with .go, it's likely a file
+			if strings.HasSuffix(part, ".go") {
+				filePath := strings.Join(parts[i:], "/")
+				if !seen[filePath] {
+					seen[filePath] = true
+					files = append(files, filePath)
+				}
+				break
+			}
+			// If part contains a dot (like Package.Func), it might be a file without extension
+			if strings.Contains(part, ".") && !strings.Contains(part, "/") {
+				// Try adding .go extension
+				filePath := strings.Join(parts[i:], "/") + ".go"
+				if !seen[filePath] {
+					seen[filePath] = true
+					files = append(files, filePath)
+				}
+				break
+			}
+		}
+	}
+
+	return files
+}
+
+// readSourceCode reads the content of the specified Go source files.
+// It returns a map of filename -> content, ignoring files that don't exist.
+// Each file is limited to 500 lines to prevent token overflow.
+func readSourceCode(sourcePath string, files []string) map[string]string {
+	const maxLines = 500
+	result := make(map[string]string)
+
+	for _, file := range files {
+		// Skip if no source path provided
+		if sourcePath == "" {
+			continue
+		}
+
+		// Construct full path
+		fullPath := filepath.Join(sourcePath, file)
+
+		// Check if file exists
+		info, err := os.Stat(fullPath)
+		if err != nil {
+			log.Printf("[WARN] readSourceCode: file not found: %s", fullPath)
+			continue
+		}
+		if info.IsDir() {
+			continue
+		}
+
+		// Read file content
+		content, err := os.ReadFile(fullPath)
+		if err != nil {
+			log.Printf("[WARN] readSourceCode: failed to read %s: %v", fullPath, err)
+			continue
+		}
+
+		// Limit to maxLines
+		lines := strings.Split(string(content), "\n")
+		if len(lines) > maxLines {
+			lines = lines[:maxLines]
+			result[file] = strings.Join(lines, "\n") + "\n... (内容过长已截断)"
+		} else {
+			result[file] = string(content)
+		}
+
+		log.Printf("[INFO] readSourceCode: read %s (%d lines)", file, len(lines))
+	}
+
+	return result
+}
+
 // formatHexDump returns a hex dump of the data with ASCII representation.
 func formatHexDump(data []byte) string {
 	const linesize = 32
@@ -310,122 +410,81 @@ func handlePprofText(c *gin.Context) {
 	})
 }
 
-// handleSaveResult saves a complete analysis result JSON to ./output/
-func handleSaveResult(c *gin.Context) {
-	var result AnalysisResult
-	if err := c.ShouldBindJSON(&result); err != nil {
-		log.Printf("[ERROR] handleSaveResult: %v", err)
-		c.JSON(400, gin.H{"error": "invalid JSON: " + err.Error()})
-		return
-	}
-
-	resultPath, err := saveJSON(result, "analysis", "json")
+// handlePprofImage generates a PNG flame graph from pprof data
+func handlePprofImage(c *gin.Context) {
+	file, err := c.FormFile("file")
 	if err != nil {
-		log.Printf("[ERROR] handleSaveResult: %v", err)
-		c.JSON(500, gin.H{"error": "failed to save: " + err.Error()})
+		c.JSON(400, gin.H{"error": "no file uploaded"})
 		return
 	}
 
-	log.Printf("[INFO] Analysis result saved to: %s", resultPath)
+	if file.Size > 100*1024*1024 {
+		c.JSON(400, gin.H{"error": "file too large"})
+		return
+	}
+
+	f, err := file.Open()
+	if err != nil {
+		c.JSON(500, gin.H{"error": "failed to open file"})
+		return
+	}
+	rawData, err := io.ReadAll(f)
+	f.Close()
+	if err != nil {
+		c.JSON(500, gin.H{"error": "failed to read file"})
+		return
+	}
+
+	log.Printf("[INFO] handlePprofImage: processing %s (%d bytes)", file.Filename, len(rawData))
+
+	// Save to tmp dir
+	tmpDir := filepath.Join(".", "tmp")
+	if err := os.MkdirAll(tmpDir, 0755); err != nil {
+		c.JSON(500, gin.H{"error": "failed to create tmp dir"})
+		return
+	}
+	profPath := filepath.Join(tmpDir, "pprof_"+filepath.Base(file.Filename))
+	if err := os.WriteFile(profPath, rawData, 0644); err != nil {
+		c.JSON(500, gin.H{"error": "failed to write temp file"})
+		return
+	}
+	defer os.Remove(profPath)
+
+	// Find pprof binary
+	goroot := os.Getenv("GOROOT")
+	if goroot == "" {
+		log.Printf("[ERROR] GOROOT not set")
+		c.JSON(500, gin.H{"error": "GOROOT not set, please configure GOROOT"})
+		return
+	}
+
+	goos := runtime.GOOS
+	goarch := runtime.GOARCH
+	gotoolDir := filepath.Join(goroot, "pkg", "tool", goos+"_"+goarch)
+	pprofBin := filepath.Join(gotoolDir, "pprof")
+
+	if _, err := os.Stat(pprofBin); err != nil {
+		log.Printf("[ERROR] pprof not found at: %s", pprofBin)
+		c.JSON(500, gin.H{"error": "pprof binary not found"})
+		return
+	}
+
+	// Generate PNG using -png -output flags
+	pngPath := outputPath("pprof_image", "png")
+	cmd := exec.Command(pprofBin, "-png", "-output="+pngPath, profPath)
+	cmdErr := cmd.Run()
+	if cmdErr != nil {
+		log.Printf("[ERROR] pprof -output failed: %v", cmdErr)
+		c.JSON(500, gin.H{"error": "failed to generate pprof image: " + cmdErr.Error()})
+		return
+	}
+
+	log.Printf("[INFO] handlePprofImage: image saved to %s", pngPath)
 	c.JSON(200, gin.H{
-		"success":     true,
-		"result_path": resultPath,
-		"result_url":  "/" + resultPath,
-	})
-}
-
-func handleAnalyze(c *gin.Context) {
-	model := os.Getenv("AI_MODEL")
-	if model == "" {
-		model = "gpt-4o"
-	}
-	apiKey := os.Getenv("AI_API_KEY")
-	baseURL := os.Getenv("AI_BASE_URL")
-	if baseURL == "" {
-		baseURL = "https://api.openai.com/v1"
-	}
-
-	if apiKey == "" {
-		c.JSON(500, gin.H{"error": "AI_API_KEY not configured"})
-		return
-	}
-
-	form, err := c.MultipartForm()
-	if err != nil {
-		c.JSON(400, gin.H{"error": "failed to parse form: " + err.Error()})
-		return
-	}
-
-	files := form.File["files"]
-	if len(files) == 0 {
-		c.JSON(400, gin.H{"error": "no files uploaded"})
-		return
-	}
-
-	var analysisTexts []string
-	var fileNames []string
-
-	for _, f := range files {
-		fileNames = append(fileNames, f.Filename)
-		src, err := f.Open()
-		if err != nil {
-			c.JSON(500, gin.H{"error": "failed to read file"})
-			return
-		}
-		rawData, err := io.ReadAll(src)
-		src.Close()
-		if err != nil {
-			c.JSON(500, gin.H{"error": "failed to read file content"})
-			return
-		}
-
-		// Convert binary pprof to text using go tool pprof
-		pprofText, ok, err := runGoToolPprof(rawData, f.Filename)
-		if err != nil {
-			log.Printf("[WARN] handleAnalyze: pprof conversion failed for %s: %v", f.Filename, err)
-		} else if !ok {
-			log.Printf("[WARN] handleAnalyze: go tool pprof unavailable for %s, using hex dump", f.Filename)
-		}
-
-		// Log preview of what we're sending to AI
-		preview := pprofText
-		if len(preview) > 300 {
-			preview = preview[:300] + "..."
-		}
-		if ok {
-			log.Printf("[INFO] handleAnalyze: pprof text preview for %s:\n%s", f.Filename, preview)
-		} else {
-			log.Printf("[INFO] handleAnalyze: hex dump preview for %s:\n%s", f.Filename, preview)
-		}
-		analysisTexts = append(analysisTexts, pprofText)
-	}
-
-	prompt := buildPrompt(fileNames, analysisTexts, c.PostForm("source_path"))
-
-	// Log full prompt so user can verify what's being sent to AI
-	log.Printf("[INFO] ===== PROMPT SENT TO AI =====")
-	log.Printf("%s", prompt)
-	log.Printf("[INFO] ===== END OF PROMPT =====")
-	log.Printf("[INFO] handleAnalyze: calling AI model=%s files=%v", model, fileNames)
-	analysis, err := callAI(apiKey, baseURL, model, prompt)
-	if err != nil {
-		log.Printf("[ERROR] handleAnalyze: AI call failed: %v", err)
-		c.JSON(500, gin.H{"error": "analysis failed: " + err.Error()})
-		return
-	}
-
-	resultPath, err := saveJSON(analysis, "analysis", "json")
-	if err != nil {
-		log.Printf("[WARN] handleAnalyze: failed to save result: %v", err)
-	} else {
-		log.Printf("[INFO] handleAnalyze: result saved to %s", resultPath)
-	}
-
-	c.JSON(200, gin.H{
-		"success":     true,
-		"data":        analysis,
-		"result_url":  "/" + resultPath,
-		"result_path": resultPath,
+		"success": true,
+		"path":    pngPath,
+		"url":     "/" + pngPath,
+		"message": "图片已生成",
 	})
 }
 
@@ -434,6 +493,10 @@ func handleAnalyzeStream(c *gin.Context) {
 	model := os.Getenv("AI_MODEL")
 	if model == "" {
 		model = "gpt-4o"
+	}
+	outputLanguage := os.Getenv("OUTPUT_LANGUAGE")
+	if outputLanguage == "" {
+		outputLanguage = "中文"
 	}
 	apiKey := os.Getenv("AI_API_KEY")
 	baseURL := os.Getenv("AI_BASE_URL")
@@ -489,7 +552,37 @@ func handleAnalyzeStream(c *gin.Context) {
 		analysisTexts = append(analysisTexts, pprofText)
 	}
 
-	prompt := buildPrompt(fileNames, analysisTexts, c.PostForm("source_path"))
+	sourcePath := c.PostForm("source_path")
+
+	// Extract source files from pprof text and read their content
+	var sourceCode map[string]string
+	if sourcePath != "" {
+		// Find pprof binary path
+		goroot := os.Getenv("GOROOT")
+		if goroot != "" {
+			for _, pprofText := range analysisTexts {
+				// First try direct file:line extraction
+				files := extractSourceFiles(pprofText)
+				if len(files) == 0 {
+					// If no files found, extract top functions and use heuristic
+					topFuncs := extractTopFunctions(pprofText, 15)
+					if len(topFuncs) > 0 {
+						log.Printf("[INFO] handleAnalyzeStream: extracted %d top functions, using heuristic for file locations", len(topFuncs))
+						files = convertFuncNamesToFiles(topFuncs)
+					}
+				}
+				if len(files) > 0 {
+					sourceCode = readSourceCode(sourcePath, files)
+					if len(sourceCode) > 0 {
+						log.Printf("[INFO] handleAnalyzeStream: successfully read %d source files", len(sourceCode))
+						break
+					}
+				}
+			}
+		}
+	}
+
+	prompt := buildPrompt(fileNames, analysisTexts, sourcePath, sourceCode)
 
 	log.Printf("[INFO] ===== STREAMING PROMPT SENT TO AI =====")
 	log.Printf("%s", prompt)
@@ -515,7 +608,7 @@ func handleAnalyzeStream(c *gin.Context) {
 	payload := AIRequest{
 		Model: model,
 		Messages: []AIMessage{
-			{Role: "system", Content: "你是一个专业的Go语言性能分析专家，擅长分析pprof、trace等性能分析文件。请以JSON格式返回分析结果。"},
+			{Role: "system", Content: prompts.StreamingMarkdownSystemPrompt(outputLanguage)},
 			{Role: "user", Content: prompt},
 		},
 		Stream: true,
@@ -604,29 +697,44 @@ func handleAnalyzeStream(c *gin.Context) {
 		send("chunk", escaped)
 	}
 
+	// Clean accumulated content - remove anything before ```markdown
+	cleaned := accumulated
+	if idx := strings.Index(cleaned, "```markdown"); idx != -1 {
+		cleaned = cleaned[idx:]
+	} else if idx := strings.Index(cleaned, "```"); idx != -1 {
+		cleaned = cleaned[idx:]
+	}
+
 	// Save the complete accumulated response
 	send("status", "正在保存结果...")
-	if accumulated != "" {
-		var result AnalysisResult
-		if err := json.Unmarshal([]byte(accumulated), &result); err == nil {
-			resultPath, err := saveJSON(result, "analysis_stream", "json")
-			if err == nil {
-				send("saved", resultPath)
-				log.Printf("[INFO] handleAnalyzeStream: result saved to %s", resultPath)
-			}
-		}
+	if cleaned != "" {
+		// Save as text file since it's now markdown
+		resultPath := outputPath("analysis_result", "txt")
+		os.WriteFile(resultPath, []byte(cleaned), 0644)
+		send("saved", resultPath)
+		log.Printf("[INFO] handleAnalyzeStream: result saved to %s", resultPath)
 	}
 
 	send("done", "")
 	log.Printf("[INFO] handleAnalyzeStream: stream finished")
 }
 
-func buildPrompt(fileNames, analysisTexts []string, sourcePath string) string {
+func buildPrompt(fileNames, analysisTexts []string, sourcePath string, sourceCode map[string]string) string {
 	var sb strings.Builder
 	sb.WriteString("你是一个专业的性能分析专家。以下是 PROF 文件经过 go tools 分析后的文本数据，请基于这些数据进行详细分析。\n\n")
 
 	if sourcePath != "" {
 		sb.WriteString(fmt.Sprintf("本地源码路径: %s\n\n", sourcePath))
+	}
+
+	// Add source code content
+	if len(sourceCode) > 0 {
+		sb.WriteString("=== 源码文件 ===\n\n")
+		for filename, content := range sourceCode {
+			sb.WriteString(fmt.Sprintf("=== 源码文件: %s ===\n", filename))
+			sb.WriteString(content)
+			sb.WriteString("\n\n")
+		}
 	}
 
 	for i, name := range fileNames {
@@ -639,98 +747,28 @@ func buildPrompt(fileNames, analysisTexts []string, sourcePath string) string {
 		sb.WriteString("\n\n")
 	}
 
-	sb.WriteString(`请分析以上 PROF 分析数据，返回以下格式的 JSON（确保 JSON 可直接解析）：
-{
-  "summary": "总体分析摘要，2-3句话",
-  "chain": [
-    {"from": "函数A", "to": "函数B", "description": "调用关系说明", "time_cost": "5ms"}
-  ],
-  "root_cause": "问题根因分析，清晰明确",
-  "solutions": ["解决方案1", "解决方案2", "解决方案3"],
-  "metrics": {
-    "total_time": "总耗时",
-    "memory_usage": "内存使用",
-    "cpu_usage": "CPU使用率",
-    "goroutines": 100,
-    "gc_count": 5
-  },
-  "charts": [
-    {"type": "pie", "name": "时间消耗分布", "data": {"labels": ["函数A", "函数B"], "values": [30, 70]}},
-    {"type": "bar", "name": "函数调用次数", "data": {"labels": ["函数A", "函数B"], "values": [100, 50]}}
-  ],
-  "hotspots": [
-    {"function": "函数名", "location": "文件:行号", "time_cost": "10ms", "percentage": 25.5, "calls": 1000}
-  ],
-  "call_tree": [
-    {"name": "main", "time_cost": "100ms", "calls": 1, "children": [
-      {"name": "handler", "time_cost": "80ms", "calls": 10, "children": []}
-    ]}
-  ]
-}`)
+	sb.WriteString(`请分析以上 PROF 数据，返回规范的 Markdown 格式报告。
+
+【格式要求】
+- 使用标题、表格、列表等 Markdown 元素
+- 性能热点和排名数据只返回 Top 10
+- 表格要有清晰的表头
+- 保持格式整洁美观
+
+【必须包含的章节】
+1. 总览：简要总结主要性能问题
+2. 问题根因：清晰描述导致性能问题的根本原因
+3. 性能热点：表格展示 Top 10 函数（排名、函数名、位置、耗时、占比、调用次数）
+4. 调用链路：表格展示关键调用关系
+5. 解决建议：编号列表形式
+6. 指标汇总：表格展示关键指标
+
+【注意事项】
+- 只返回 Markdown 格式，不要 JSON
+- 不要使用代码块包裹整个输出
+- 表格使用标准 Markdown 表格语法`)
 
 	return sb.String()
-}
-
-func callAI(apiKey, baseURL, model, content string) (*AnalysisResult, error) {
-	payload := AIRequest{
-		Model: model,
-		Messages: []AIMessage{
-			{Role: "system", Content: "你是一个专业的Go语言性能分析专家，擅长分析pprof、trace等性能分析文件。请以JSON格式返回分析结果，不要包含其他文字。"},
-			{Role: "user", Content: content},
-		},
-		Stream: false,
-	}
-
-	jsonData, err := json.Marshal(payload)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request: %w", err)
-	}
-
-	req, err := http.NewRequest("POST", baseURL+"/chat/completions", bytes.NewBuffer(jsonData))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+apiKey)
-
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to call AI API: %w", err)
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response: %w", err)
-	}
-
-	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("AI API returned status %d: %s", resp.StatusCode, string(body))
-	}
-
-	var aiResp AIResponse
-	if err := json.Unmarshal(body, &aiResp); err != nil {
-		return nil, fmt.Errorf("failed to parse AI response: %w", err)
-	}
-
-	if len(aiResp.Choices) == 0 {
-		return nil, fmt.Errorf("no choices in AI response")
-	}
-
-	aiContent := aiResp.Choices[0].Message.Content
-	aiContent = strings.TrimSpace(aiContent)
-	aiContent = strings.TrimPrefix(aiContent, "```json")
-	aiContent = strings.TrimPrefix(aiContent, "```")
-	aiContent = strings.TrimSuffix(aiContent, "```")
-	aiContent = strings.TrimSpace(aiContent)
-
-	var result AnalysisResult
-	if err := json.Unmarshal([]byte(aiContent), &result); err != nil {
-		return nil, fmt.Errorf("failed to parse AI response as JSON: %w (preview: %s)", err, aiContent[:min(200, len(aiContent))])
-	}
-
-	return &result, nil
 }
 
 func min(a, b int) int {

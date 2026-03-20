@@ -1,282 +1,42 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, watch } from 'vue'
-import * as echarts from 'echarts'
-import type { AnalysisResult } from '../types'
-
-const props = defineProps<{
-  result: AnalysisResult
+defineProps<{
+  pprofImageUrl?: string
 }>()
-
-const pieChartRef = ref<HTMLDivElement | null>(null)
-const barChartRef = ref<HTMLDivElement | null>(null)
-const hotspotChartRef = ref<HTMLDivElement | null>(null)
-const treeChartRef = ref<HTMLDivElement | null>(null)
-
-let pieChart: echarts.ECharts | null = null
-let barChart: echarts.ECharts | null = null
-let hotspotChart: echarts.ECharts | null = null
-let treeChart: echarts.ECharts | null = null
-
-function getPieChartOption() {
-  const chartData = props.result.charts.find(c => c.type === 'pie')
-  if (!chartData) {
-    return {
-      title: { text: '时间消耗分布', left: 'center' },
-      tooltip: { trigger: 'item', formatter: '{b}: {c} ({d}%)' },
-      series: [{
-        type: 'pie',
-        radius: ['40%', '70%'],
-        data: [
-          { value: 45, name: '数据库查询' },
-          { value: 20, name: 'JSON序列化' },
-          { value: 15, name: '网络传输' },
-          { value: 12, name: '业务逻辑' },
-          { value: 8, name: '其他' }
-        ]
-      }]
-    }
-  }
-
-  const labels = chartData.data.labels || []
-  const values = chartData.data.values || []
-
-  return {
-    title: {
-      text: chartData.name,
-      left: 'center',
-      textStyle: { fontSize: 16, fontWeight: 'normal' }
-    },
-    tooltip: {
-      trigger: 'item',
-      formatter: '{b}: {c} ({d}%)'
-    },
-    legend: {
-      orient: 'vertical',
-      right: 10,
-      top: 'center'
-    },
-    series: [{
-      type: 'pie',
-      radius: ['40%', '70%'],
-      center: ['40%', '50%'],
-      data: labels.map((label, i) => ({
-        name: label,
-        value: values[i]
-      }))
-    }]
-  }
-}
-
-function getBarChartOption() {
-  const chartData = props.result.charts.find(c => c.type === 'bar')
-  if (!chartData) {
-    return {
-      title: { text: '函数调用次数', left: 'center' },
-      tooltip: { trigger: 'axis' },
-      xAxis: {
-        type: 'category',
-        data: ['json.Marshal', 'db.Query', 'redis.Get', 'http.Handler', 'log.Printf'],
-        axisLabel: { rotate: 30, fontSize: 10 }
-      },
-      yAxis: { type: 'value' },
-      series: [{
-        type: 'bar',
-        data: [5000, 1000, 2000, 100, 500],
-        itemStyle: { color: '#3b82f6' }
-      }]
-    }
-  }
-
-  const labels = chartData.data.labels || []
-  const values = chartData.data.values || []
-
-  return {
-    title: {
-      text: chartData.name,
-      left: 'center',
-      textStyle: { fontSize: 16, fontWeight: 'normal' }
-    },
-    tooltip: { trigger: 'axis' },
-    grid: { left: '3%', right: '4%', bottom: '15%', containLabel: true },
-    xAxis: {
-      type: 'category',
-      data: labels,
-      axisLabel: { rotate: 30, fontSize: 10 }
-    },
-    yAxis: { type: 'value' },
-    series: [{
-      type: 'bar',
-      data: values,
-      itemStyle: {
-        color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
-          { offset: 0, color: '#60a5fa' },
-          { offset: 1, color: '#2563eb' }
-        ])
-      },
-      barWidth: '50%'
-    }]
-  }
-}
-
-function getHotspotChartOption() {
-  const hotspots = props.result.hotspots.slice(0, 5)
-
-  return {
-    title: {
-      text: 'Top 5 性能热点',
-      left: 'center',
-      textStyle: { fontSize: 16, fontWeight: 'normal' }
-    },
-    tooltip: { trigger: 'axis' },
-    grid: { left: '3%', right: '4%', bottom: '3%', containLabel: true },
-    xAxis: {
-      type: 'value',
-      name: '占比 (%)'
-    },
-    yAxis: {
-      type: 'category',
-      data: hotspots.map(h => h.function).reverse(),
-      axisLabel: { fontSize: 11 }
-    },
-    series: [{
-      type: 'bar',
-      data: hotspots.map(h => h.percentage).reverse(),
-      itemStyle: {
-        color: new echarts.graphic.LinearGradient(0, 0, 1, 0, [
-          { offset: 0, color: '#f97316' },
-          { offset: 1, color: '#fbbf24' }
-        ])
-      },
-      barWidth: '60%'
-    }]
-  }
-}
-
-function getTreeChartOption() {
-  function buildTree(nodes: any[]): any {
-    if (!nodes || nodes.length === 0) {
-      return {
-        name: 'main',
-        children: []
-      }
-    }
-
-    return {
-      name: nodes[0].name,
-      children: (nodes[0].children || []).map((child: any) => buildTree([child]))
-    }
-  }
-
-  const treeData = buildTree(props.result.call_tree)
-
-  return {
-    title: {
-      text: '调用树',
-      left: 'center',
-      textStyle: { fontSize: 16, fontWeight: 'normal' }
-    },
-    tooltip: { trigger: 'item', formatter: '{b}' },
-    series: [{
-      type: 'tree',
-      data: [treeData],
-      orient: 'TB',
-      symbol: 'rect',
-      symbolSize: [80, 30],
-      itemStyle: {
-        color: '#dbeafe',
-        borderColor: '#3b82f6',
-        borderWidth: 1
-      },
-      label: {
-        fontSize: 11,
-        position: 'inside'
-      },
-      leaves: {
-        itemStyle: {
-          color: '#bbf7d0',
-          borderColor: '#22c55e'
-        }
-      },
-      expandAndCollapse: true,
-      initialTreeDepth: 2
-    }]
-  }
-}
-
-function initCharts() {
-  if (pieChartRef.value) {
-    pieChart = echarts.init(pieChartRef.value)
-    pieChart.setOption(getPieChartOption())
-  }
-
-  if (barChartRef.value) {
-    barChart = echarts.init(barChartRef.value)
-    barChart.setOption(getBarChartOption())
-  }
-
-  if (hotspotChartRef.value) {
-    hotspotChart = echarts.init(hotspotChartRef.value)
-    hotspotChart.setOption(getHotspotChartOption())
-  }
-
-  if (treeChartRef.value) {
-    treeChart = echarts.init(treeChartRef.value)
-    treeChart.setOption(getTreeChartOption())
-  }
-}
-
-function handleResize() {
-  pieChart?.resize()
-  barChart?.resize()
-  hotspotChart?.resize()
-  treeChart?.resize()
-}
-
-onMounted(() => {
-  initCharts()
-  window.addEventListener('resize', handleResize)
-})
-
-onUnmounted(() => {
-  window.removeEventListener('resize', handleResize)
-  pieChart?.dispose()
-  barChart?.dispose()
-  hotspotChart?.dispose()
-  treeChart?.dispose()
-})
-
-watch(() => props.result, () => {
-  pieChart?.setOption(getPieChartOption())
-  barChart?.setOption(getBarChartOption())
-  hotspotChart?.setOption(getHotspotChartOption())
-  treeChart?.setOption(getTreeChartOption())
-}, { deep: true })
 </script>
 
 <template>
   <div class="space-y-6">
-    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
-      <!-- Pie Chart -->
-      <div class="chart-container bg-white rounded-2xl p-6 shadow-sm border border-gray-100 dark:bg-gray-800 dark:border-gray-700">
-        <div ref="pieChartRef" class="w-full h-80"></div>
+    <!-- Pprof Image -->
+    <div v-if="pprofImageUrl" class="bg-white rounded-2xl p-6 shadow-sm border border-gray-100">
+      <div class="flex items-center justify-between mb-4">
+        <h3 class="text-lg font-semibold text-gray-700 flex items-center space-x-2">
+          <svg class="w-5 h-5 text-orange-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+          </svg>
+          <span>Pprof 火焰图</span>
+        </h3>
+        <a
+          :href="pprofImageUrl"
+          download="pprof.png"
+          class="text-sm text-primary-600 hover:text-primary-800 flex items-center space-x-1"
+        >
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+          </svg>
+          <span>下载</span>
+        </a>
       </div>
-
-      <!-- Bar Chart -->
-      <div class="chart-container bg-white rounded-2xl p-6 shadow-sm border border-gray-100 dark:bg-gray-800 dark:border-gray-700">
-        <div ref="barChartRef" class="w-full h-80"></div>
+      <div class="flex justify-center bg-gray-50 rounded-lg p-4">
+        <img :src="pprofImageUrl" alt="Pprof Flame Graph" class="max-w-full h-auto rounded shadow-sm" />
       </div>
     </div>
 
-    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
-      <!-- Hotspot Chart -->
-      <div class="chart-container bg-white rounded-2xl p-6 shadow-sm border border-gray-100 dark:bg-gray-800 dark:border-gray-700">
-        <div ref="hotspotChartRef" class="w-full h-80"></div>
-      </div>
-
-      <!-- Tree Chart -->
-      <div class="chart-container bg-white rounded-2xl p-6 shadow-sm border border-gray-100 dark:bg-gray-800 dark:border-gray-700">
-        <div ref="treeChartRef" class="w-full h-80"></div>
-      </div>
+    <!-- No Image Placeholder -->
+    <div v-else class="bg-white rounded-2xl p-12 shadow-sm border border-gray-100 text-center">
+      <svg class="w-16 h-16 mx-auto text-gray-300 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+      </svg>
+      <p class="text-gray-500">点击「生成 Pprof 图片」后可在此查看火焰图</p>
     </div>
   </div>
 </template>

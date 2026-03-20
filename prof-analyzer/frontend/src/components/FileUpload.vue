@@ -5,14 +5,12 @@ import type { UploadedFile } from '../types'
 const props = defineProps<{
   files: UploadedFile[]
   sourcePath: string
-  isAnalyzing: boolean
   isStreaming: boolean
 }>()
 
 const emit = defineEmits<{
   (e: 'files-selected', files: UploadedFile[]): void
   (e: 'source-path-change', path: string): void
-  (e: 'analyze'): void
   (e: 'stream-analyze'): void
   (e: 'generate-pprof'): void
 }>()
@@ -220,41 +218,14 @@ function updateSourcePath(e: Event) {
     </div>
 
     <!-- Action Buttons -->
-    <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
-      <!-- Analyze Button -->
-      <button
-        @click="$emit('analyze')"
-        :disabled="!hasFiles || isAnalyzing || isStreaming"
-        :class="[
-          'py-3 px-4 rounded-xl text-sm font-semibold transition-all duration-200 flex items-center justify-center space-x-2',
-          hasFiles && !isAnalyzing && !isStreaming
-            ? 'bg-primary-600 text-white hover:bg-primary-700 shadow-sm hover:shadow-md'
-            : 'bg-gray-100 dark:bg-gray-700 text-gray-400 cursor-not-allowed'
-        ]"
-      >
-        <span v-if="isAnalyzing" class="flex items-center space-x-2">
-          <svg class="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24">
-            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-          </svg>
-          <span>分析中...</span>
-        </span>
-        <span v-else class="flex items-center space-x-2">
-          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-          </svg>
-          <span>AI 分析</span>
-        </span>
-      </button>
-
-      <!-- Streaming Analyze Button -->
+    <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
       <button
         @click="$emit('stream-analyze')"
-        :disabled="!hasFiles || isAnalyzing || isStreaming"
+        :disabled="!hasFiles || isStreaming"
         :class="[
           'py-3 px-4 rounded-xl text-sm font-semibold transition-all duration-200 flex items-center justify-center space-x-2',
-          hasFiles && !isAnalyzing && !isStreaming
-            ? 'bg-purple-600 text-white hover:bg-purple-700 shadow-sm hover:shadow-md'
+          hasFiles && !isStreaming
+            ? 'bg-primary-600 text-white hover:bg-primary-700 shadow-sm hover:shadow-md'
             : 'bg-gray-100 dark:bg-gray-700 text-gray-400 cursor-not-allowed'
         ]"
       >
@@ -263,23 +234,21 @@ function updateSourcePath(e: Event) {
             <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
             <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
           </svg>
-          <span>流式输出中...</span>
+          <span>分析中...</span>
         </span>
         <span v-else class="flex items-center space-x-2">
           <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
           </svg>
-          <span>流式分析</span>
+          <span>开始分析</span>
         </span>
       </button>
-
-      <!-- Generate Pprof Image Button -->
       <button
         @click="$emit('generate-pprof')"
-        :disabled="!hasFiles || isAnalyzing || isStreaming"
+        :disabled="!hasFiles || isStreaming"
         :class="[
           'py-3 px-4 rounded-xl text-sm font-semibold transition-all duration-200 flex items-center justify-center space-x-2',
-          hasFiles && !isAnalyzing && !isStreaming
+          hasFiles && !isStreaming
             ? 'bg-orange-500 text-white hover:bg-orange-600 shadow-sm hover:shadow-md'
             : 'bg-gray-100 dark:bg-gray-700 text-gray-400 cursor-not-allowed'
         ]"

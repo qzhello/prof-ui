@@ -75,29 +75,19 @@ MAX_UPLOAD_SIZE=50
 
 ## API Endpoints
 
-### POST /api/analyze
-Upload PROF files and get AI analysis.
+### POST /api/analyze/stream
+Upload PROF files and receive a streamed Markdown analysis.
 
 **Request:**
 - `multipart/form-data`
 - `files`: File[] (multiple)
 - `source_path`: string (optional)
-- `model`: string (optional, overrides .env)
 
 **Response:**
-```json
-{
-  "success": true,
-  "data": {
-    "summary": "...",
-    "chain": [...],
-    "root_cause": "...",
-    "solutions": [...],
-    "metrics": {...},
-    "charts": [...]
-  }
-}
-```
+- `text/event-stream`
+- `chunk`: incremental Markdown output
+- `saved`: saved report path
+- `error`: error message
 
 ### GET /api/health
 Health check endpoint.
@@ -162,7 +152,6 @@ prof-analyzer/
 │   │   ├── App.vue
 │   │   ├── components/
 │   │   │   ├── FileUpload.vue
-│   │   │   ├── AnalysisResult.vue
 │   │   │   ├── Charts.vue
 │   │   │   └── PdfExport.vue
 │   │   ├── types/
