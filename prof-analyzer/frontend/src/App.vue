@@ -13,6 +13,10 @@ const isAnalyzing = ref(false)
 const analysisResult = ref<AnalysisResultType | null>(null)
 const errorMessage = ref('')
 
+// Streaming state
+const isStreaming = ref(false)
+const streamingOutput = ref('')
+
 const hasResult = computed(() => analysisResult.value !== null)
 
 function handleFilesSelected(files: UploadedFile[]) {
@@ -31,6 +35,7 @@ async function startAnalysis() {
 
   isAnalyzing.value = true
   errorMessage.value = ''
+  streamingOutput.value = ''
   activeTab.value = 'upload'
 
   try {
@@ -45,8 +50,115 @@ async function startAnalysis() {
   }
 }
 
+async function startStreamingAnalysis() {
+  if (uploadedFiles.value.length === 0) {
+    errorMessage.value = '请先选择要分析的文件'
+    return
+  }
+
+  isStreaming.value = true
+  errorMessage.value = ''
+  streamingOutput.value = ''
+  activeTab.value = 'result'
+
+  try {
+    const formData = new FormData()
+    uploadedFiles.value.forEach((f) => formData.append('files', f.file))
+    if (sourcePath.value) formData.append('source_path', sourcePath.value)
+
+    const response = await fetch('/api/analyze/stream', {
+      method: 'POST',
+      body: formData,
+    })
+
+    if (!response.ok) {
+      const err = await response.text()
+      throw new Error(`Server error: ${response.status} - ${err}`)
+    }
+
+    const reader = response.body?.getReader()
+    if (!reader) throw new Error('No response body')
+
+    const decoder = new TextDecoder()
+    let buffer = ''
+
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split('\n')
+      buffer = lines.pop() || ''
+
+      for (const line of lines) {
+        if (line.startsWith('data: ')) {
+          const data = line.slice(6).trim()
+          if (data === '') continue
+          if (data === '[DONE]') continue
+
+          try {
+            const event = JSON.parse(data)
+            if (event.event === 'chunk' && event.data) {
+              streamingOutput.value += event.data
+            } else if (event.event === 'error') {
+              errorMessage.value = event.data || 'Stream error'
+            } else if (event.event === 'done') {
+              // parse final JSON
+            }
+          } catch {
+            // might be plain chunk data
+          }
+        }
+      }
+    }
+
+    // Try to parse accumulated output as JSON
+    const jsonStart = streamingOutput.value.indexOf('{')
+    if (jsonStart !== -1) {
+      try {
+        const jsonStr = streamingOutput.value.slice(jsonStart)
+        analysisResult.value = JSON.parse(jsonStr)
+        activeTab.value = 'result'
+      } catch {
+        errorMessage.value = '流式输出解析失败，请尝试普通分析模式'
+        activeTab.value = 'upload'
+      }
+    }
+  } catch (err: any) {
+    errorMessage.value = err.message || '流式分析失败'
+    activeTab.value = 'upload'
+  } finally {
+    isStreaming.value = false
+  }
+}
+
+async function generatePprofImage() {
+  if (uploadedFiles.value.length === 0) {
+    errorMessage.value = '请先选择要分析的文件'
+    return
+  }
+
+  const formData = new FormData()
+  formData.append('file', uploadedFiles.value[0].file)
+
+  try {
+    const response = await fetch('/api/pprof/image', { method: 'POST', body: formData })
+    if (!response.ok) {
+      const err = await response.json()
+      errorMessage.value = err.error || '生成 pprof 图片失败'
+      return
+    }
+    const blob = await response.blob()
+    const url = URL.createObjectURL(blob)
+    window.open(url, '_blank')
+  } catch (err: any) {
+    errorMessage.value = err.message || '生成图片失败'
+  }
+}
+
 function clearResults() {
   analysisResult.value = null
+  streamingOutput.value = ''
   uploadedFiles.value = []
   sourcePath.value = ''
   errorMessage.value = ''
@@ -153,15 +265,27 @@ function clearResults() {
       </div>
 
       <!-- Upload Tab -->
-      <div v-show="activeTab === 'upload'">
+      <div v-if="activeTab === 'upload'">
         <FileUpload
           :files="uploadedFiles"
           :source-path="sourcePath"
           :is-analyzing="isAnalyzing"
+          :is-streaming="isStreaming"
           @files-selected="handleFilesSelected"
           @source-path-change="handleSourcePathChange"
           @analyze="startAnalysis"
+          @stream-analyze="startStreamingAnalysis"
+          @generate-pprof="generatePprofImage"
         />
+      </div>
+
+      <!-- Streaming Panel -->
+      <div v-if="activeTab === 'result' && isStreaming" class="bg-gray-900 rounded-2xl p-6 text-white">
+        <div class="flex items-center space-x-3 mb-4">
+          <div class="animate-pulse w-3 h-3 bg-green-400 rounded-full"></div>
+          <h3 class="text-lg font-semibold text-green-400">AI 正在分析...</h3>
+        </div>
+        <pre class="text-sm text-green-300 font-mono whitespace-pre-wrap overflow-x-auto max-h-96 leading-relaxed">{{ streamingOutput || '等待响应...' }}</pre>
       </div>
 
       <!-- Result Tab -->

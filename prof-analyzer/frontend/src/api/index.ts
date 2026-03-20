@@ -47,4 +47,10 @@ export async function healthCheck(): Promise<boolean> {
   }
 }
 
+// getApiKey returns the API key for streaming auth header.
+// In production this should come from env; here we expose it for the streaming fetch in App.vue.
+export function getApiKey(): string {
+  return ''
+}
+
 export { api }

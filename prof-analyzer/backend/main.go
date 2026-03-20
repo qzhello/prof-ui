@@ -8,6 +8,8 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"github.com/gin-contrib/cors"
@@ -21,14 +23,14 @@ type AnalysisRequest struct {
 }
 
 type AnalysisResult struct {
-	Summary    string          `json:"summary"`
-	Chain      []ChainLink     `json:"chain"`
-	RootCause  string          `json:"root_cause"`
-	Solutions  []string        `json:"solutions"`
-	Metrics    Metrics         `json:"metrics"`
-	Charts     []ChartData     `json:"charts"`
-	Hotspots   []Hotspot       `json:"hotspots"`
-	CallTree   []CallNode      `json:"call_tree"`
+	Summary    string      `json:"summary"`
+	Chain      []ChainLink `json:"chain"`
+	RootCause  string      `json:"root_cause"`
+	Solutions  []string    `json:"solutions"`
+	Metrics    Metrics     `json:"metrics"`
+	Charts     []ChartData `json:"charts"`
+	Hotspots   []Hotspot   `json:"hotspots"`
+	CallTree   []CallNode  `json:"call_tree"`
 }
 
 type ChainLink struct {
@@ -61,16 +63,16 @@ type Hotspot struct {
 }
 
 type CallNode struct {
-	Name      string      `json:"name"`
-	TimeCost  string      `json:"time_cost"`
-	Calls     int         `json:"calls"`
-	Children  []CallNode  `json:"children,omitempty"`
+	Name     string     `json:"name"`
+	TimeCost string     `json:"time_cost"`
+	Calls    int        `json:"calls"`
+	Children []CallNode `json:"children,omitempty"`
 }
 
 type AIRequest struct {
-	Model    string        `json:"model"`
-	Messages []AIMessage   `json:"messages"`
-	Stream   bool          `json:"stream"`
+	Model    string      `json:"model"`
+	Messages []AIMessage `json:"messages"`
+	Stream   bool        `json:"stream"`
 }
 
 type AIMessage struct {
@@ -86,6 +88,8 @@ type Choice struct {
 	Message AIMessage `json:"message"`
 }
 
+var httpClient = &http.Client{}
+
 func main() {
 	godotenv.Load()
 
@@ -98,7 +102,7 @@ func main() {
 	r := gin.Default()
 
 	config := cors.DefaultConfig()
-	config.AllowOrigins = []string{"http://localhost:5173", "http://localhost:3000", "http://127.0.0.1:5173"}
+	config.AllowOrigins = []string{"*"}
 	config.AllowMethods = []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"}
 	config.AllowHeaders = []string{"Origin", "Content-Type", "Accept", "Authorization"}
 	r.Use(cors.New(config))
@@ -110,8 +114,9 @@ func main() {
 	})
 
 	r.POST("/api/analyze", handleAnalyze)
+	r.POST("/api/analyze/stream", handleAnalyzeStream)
+	r.POST("/api/pprof/image", handlePprofImage)
 	r.GET("/api/health", handleHealth)
-	r.POST("/api/export-pdf", handleExportPDF)
 
 	log.Printf("Server starting on :%s", port)
 	r.Run(":" + port)
@@ -121,17 +126,201 @@ func handleHealth(c *gin.Context) {
 	c.JSON(200, gin.H{"status": "ok"})
 }
 
-func handleAnalyze(c *gin.Context) {
-	var req AnalysisRequest
-	if err := c.ShouldBind(&req); err != nil {
-		c.JSON(400, gin.H{"error": "invalid request"})
+// handlePprofImage runs `go tool pprof -png` on the uploaded file and returns the PNG image.
+func handlePprofImage(c *gin.Context) {
+	file, err := c.FormFile("file")
+	if err != nil {
+		c.JSON(400, gin.H{"error": "no file uploaded"})
 		return
 	}
 
-	model := os.Getenv("AI_MODEL")
-	if req.Model != "" {
-		model = req.Model
+	if file.Size > 100*1024*1024 {
+		c.JSON(400, gin.H{"error": "file too large, max 100MB"})
+		return
 	}
+
+	// Save to temp file
+	tmpDir := os.TempDir()
+	profPath := filepath.Join(tmpDir, "pprof_"+filepath.Base(file.Filename))
+	pngPath := filepath.Join(tmpDir, "pprof_out.png")
+
+	f, err := file.Open()
+	if err != nil {
+		c.JSON(500, gin.H{"error": "failed to open file"})
+		return
+	}
+	data, err := io.ReadAll(f)
+	f.Close()
+	if err != nil {
+		c.JSON(500, gin.H{"error": "failed to read file"})
+		return
+	}
+	if err := os.WriteFile(profPath, data, 0644); err != nil {
+		c.JSON(500, gin.H{"error": "failed to save temp file"})
+		return
+	}
+	defer os.Remove(profPath)
+	defer os.Remove(pngPath)
+
+	// Try different pprof formats
+	var out []byte
+	formats := []string{"-png", "-svg"}
+	var lastErr error
+
+	for _, format := range formats {
+		cmd := exec.Command("go", "tool", "pprof", format, profPath)
+		cmd.Dir = tmpDir
+		out, lastErr = cmd.Output()
+		if lastErr == nil {
+			break
+		}
+	}
+
+	if lastErr != nil {
+		errMsg := strings.TrimSpace(string(out))
+		if errMsg == "" {
+			errMsg = lastErr.Error()
+		}
+		c.JSON(400, gin.H{"error": "go tool pprof failed: " + errMsg})
+		return
+	}
+
+	if len(out) == 0 {
+		c.JSON(400, gin.H{"error": "pprof produced empty output, file format may not be supported"})
+		return
+	}
+
+	c.Header("Content-Type", "image/png")
+	c.Data(200, "image/png", out)
+}
+
+// handleAnalyzeStream streams AI analysis as SSE.
+func handleAnalyzeStream(c *gin.Context) {
+	model := os.Getenv("AI_MODEL")
+	baseURL := os.Getenv("AI_BASE_URL")
+	if baseURL == "" {
+		baseURL = "https://api.openai.com/v1"
+	}
+	apiKey := os.Getenv("AI_API_KEY")
+
+	form, err := c.MultipartForm()
+	if err != nil {
+		c.JSON(400, gin.H{"error": "failed to parse form: " + err.Error()})
+		return
+	}
+
+	files := form.File["files"]
+	if len(files) == 0 {
+		c.JSON(400, gin.H{"error": "no files uploaded"})
+		return
+	}
+
+	var fileContents []string
+	var fileNames []string
+	for _, f := range files {
+		fileNames = append(fileNames, f.Filename)
+		src, err := f.Open()
+		if err != nil {
+			c.JSON(500, gin.H{"error": "failed to read file"})
+			return
+		}
+		content, err := io.ReadAll(src)
+		src.Close()
+		if err != nil {
+			c.JSON(500, gin.H{"error": "failed to read file content"})
+			return
+		}
+		fileContents = append(fileContents, string(content))
+	}
+
+	sourcePath := c.PostForm("source_path")
+	prompt := buildPrompt(fileNames, fileContents, sourcePath)
+
+	c.Header("Content-Type", "text/event-stream")
+	c.Header("Cache-Control", "no-cache")
+	c.Header("Connection", "keep-alive")
+	c.Header("Transfer-Encoding", "chunked")
+
+	payload := AIRequest{
+		Model: model,
+		Messages: []AIMessage{
+			{Role: "system", Content: "你是一个专业的Go语言性能分析专家，擅长分析pprof、trace等性能分析文件。请以JSON格式返回分析结果。"},
+			{Role: "user", Content: prompt},
+		},
+		Stream: true,
+	}
+
+	jsonData, err := json.Marshal(payload)
+	if err != nil {
+		return
+	}
+
+	req, err := http.NewRequest("POST", baseURL+"/chat/completions", bytes.NewBuffer(jsonData))
+	if err != nil {
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		c.SSEvent("error", "AI request failed: "+err.Error())
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		c.SSEvent("error", fmt.Sprintf("AI API error %d: %s", resp.StatusCode, string(body)))
+		return
+	}
+
+	reader := resp.Body
+	buf := make([]byte, 0, 1024)
+	lineBuf := []byte{}
+
+	for {
+		b := make([]byte, 1)
+		n, err := reader.Read(b)
+		if n == 0 || err != nil {
+			break
+		}
+		lineBuf = append(lineBuf, b[0])
+		if b[0] == '\n' {
+			line := string(lineBuf)
+			lineBuf = lineBuf[:0]
+			if strings.HasPrefix(line, "data: ") {
+				data := strings.TrimPrefix(line, "data: ")
+				data = strings.TrimSpace(data)
+				if data == "[DONE]" {
+					c.SSEvent("done", "")
+					c.Writer.Flush()
+					break
+				}
+				// Parse SSE data field
+				var sseData struct {
+					Choices []struct {
+						Delta struct {
+							Content string `json:"content"`
+						} `json:"delta"`
+					} `json:"choices"`
+				}
+				if err := json.Unmarshal([]byte(data), &sseData); err == nil {
+					if len(sseData.Choices) > 0 && sseData.Choices[0].Delta.Content != "" {
+						c.SSEvent("chunk", sseData.Choices[0].Delta.Content)
+						c.Writer.Flush()
+					}
+				}
+			}
+		}
+	}
+
+	c.SSEvent("done", "")
+	c.Writer.Flush()
+}
+
+func handleAnalyze(c *gin.Context) {
+	model := os.Getenv("AI_MODEL")
 	if model == "" {
 		model = "gpt-4o"
 	}
@@ -160,19 +349,20 @@ func handleAnalyze(c *gin.Context) {
 		fileNames = append(fileNames, f.Filename)
 		src, err := f.Open()
 		if err != nil {
-			c.JSON(500, gin.H{"error": "failed to read file: " + err.Error()})
+			c.JSON(500, gin.H{"error": "failed to read file"})
 			return
 		}
 		content, err := io.ReadAll(src)
 		src.Close()
 		if err != nil {
-			c.JSON(500, gin.H{"error": "failed to read file content: " + err.Error()})
+			c.JSON(500, gin.H{"error": "failed to read file content"})
 			return
 		}
 		fileContents = append(fileContents, string(content))
 	}
 
-	combinedContent := buildPrompt(fileNames, fileContents, req.SourcePath)
+	sourcePath := c.PostForm("source_path")
+	combinedContent := buildPrompt(fileNames, fileContents, sourcePath)
 
 	analysis, err := callAI(apiKey, baseURL, model, combinedContent)
 	if err != nil {
@@ -262,8 +452,7 @@ func callAI(apiKey, baseURL, model, content string) (*AnalysisResult, error) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 
-	client := &http.Client{}
-	resp, err := client.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to call AI API: %w", err)
 	}
@@ -288,9 +477,7 @@ func callAI(apiKey, baseURL, model, content string) (*AnalysisResult, error) {
 	}
 
 	aiContent := aiResp.Choices[0].Message.Content
-
 	aiContent = strings.TrimSpace(aiContent)
-
 	aiContent = strings.TrimPrefix(aiContent, "```json")
 	aiContent = strings.TrimPrefix(aiContent, "```")
 	aiContent = strings.TrimSuffix(aiContent, "```")
@@ -298,88 +485,15 @@ func callAI(apiKey, baseURL, model, content string) (*AnalysisResult, error) {
 
 	var result AnalysisResult
 	if err := json.Unmarshal([]byte(aiContent), &result); err != nil {
-		generated := generateMockAnalysis()
-		return generated, nil
+		return nil, fmt.Errorf("failed to parse AI response as JSON: %w (content: %s)", err, aiContent[:min(200, len(aiContent))])
 	}
 
 	return &result, nil
 }
 
-func generateMockAnalysis() *AnalysisResult {
-	return &AnalysisResult{
-		Summary:   "分析完成。从PROF文件检测到主要性能瓶颈在数据库查询和JSON序列化环节，建议优化查询语句和减少不必要的数据转换。",
-		RootCause: "主要性能问题来自两个方面：1) 数据库查询缺少索引导致全表扫描；2) 频繁的JSON编解码操作占用大量CPU时间。",
-		Solutions: []string{
-			"为频繁查询的字段添加数据库索引",
-			"使用sync.Pool复用JSON encoder/decoder",
-			"批量查询替代循环单条查询",
-			"考虑使用msgpack或其他更高效的序列化格式",
-			"启用连接池复用数据库连接",
-		},
-		Chain: []ChainLink{
-			{From: "main.handleRequest", To: "db.Query", Description: "执行数据库查询", TimeCost: "45ms"},
-			{From: "db.Query", To: "json.Marshal", Description: "序列化结果", TimeCost: "20ms"},
-			{From: "json.Marshal", To: "io.Write", Description: "写入响应", TimeCost: "5ms"},
-		},
-		Metrics: Metrics{
-			TotalTime:   "120ms",
-			MemoryUsage: "256MB",
-			CPUUsage:    "78%",
-			Goroutines:  150,
-			GCCount:     12,
-		},
-		Hotspots: []Hotspot{
-			{Function: "db.Query", Location: "db.go:45", TimeCost: "45ms", Percentage: 37.5, Calls: 1000},
-			{Function: "json.Marshal", Location: "json.go:123", TimeCost: "20ms", Percentage: 16.7, Calls: 5000},
-			{Function: "redis.Get", Location: "cache.go:67", TimeCost: "15ms", Percentage: 12.5, Calls: 2000},
-			{Function: "http.Handler", Location: "handler.go:89", TimeCost: "10ms", Percentage: 8.3, Calls: 100},
-		},
-		Charts: []ChartData{
-			{
-				Type: "pie",
-				Name: "时间消耗分布",
-				Data: map[string]interface{}{
-					"labels": []string{"数据库查询", "JSON序列化", "网络传输", "业务逻辑", "其他"},
-					"values": []int{45, 20, 15, 12, 8},
-				},
-			},
-			{
-				Type: "bar",
-				Name: "函数调用次数",
-				Data: map[string]interface{}{
-					"labels": []string{"json.Marshal", "db.Query", "redis.Get", "http.Handler", "log.Printf"},
-					"values": []int{5000, 1000, 2000, 100, 500},
-				},
-			},
-		},
-		CallTree: []CallNode{
-			{
-				Name:     "main",
-				TimeCost: "120ms",
-				Calls:    1,
-				Children: []CallNode{
-					{
-						Name:     "handleRequest",
-						TimeCost: "100ms",
-						Calls:    10,
-						Children: []CallNode{
-							{Name: "db.Query", TimeCost: "45ms", Calls: 10},
-							{Name: "json.Marshal", TimeCost: "20ms", Calls: 10},
-							{Name: "redis.Get", TimeCost: "15ms", Calls: 10},
-						},
-					},
-					{Name: "init", TimeCost: "20ms", Calls: 1},
-				},
-			},
-		},
+func min(a, b int) int {
+	if a < b {
+		return a
 	}
-}
-
-// handleExportPDF is a no-op since PDF generation is client-side.
-// Kept for potential future server-side PDF generation needs.
-func handleExportPDF(c *gin.Context) {
-	c.JSON(200, gin.H{
-		"success": true,
-		"message": "PDF is generated client-side",
-	})
+	return b
 }
