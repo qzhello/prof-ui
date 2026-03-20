@@ -165,17 +165,17 @@ function clearResults() {
       </div>
 
       <!-- Result Tab -->
-      <div v-show="activeTab === 'result' && hasResult">
+      <div v-if="activeTab === 'result' && hasResult">
         <AnalysisResult :result="analysisResult!" />
       </div>
 
       <!-- Charts Tab -->
-      <div v-show="activeTab === 'charts' && hasResult">
+      <div v-if="activeTab === 'charts' && hasResult">
         <Charts :result="analysisResult!" />
       </div>
 
       <!-- Export Tab -->
-      <div v-show="activeTab === 'export' && hasResult">
+      <div v-if="activeTab === 'export' && hasResult">
         <PdfExport :result="analysisResult!" />
       </div>
     </main>
