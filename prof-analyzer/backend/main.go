@@ -147,72 +147,104 @@ func saveJSON(v interface{}, prefix, ext string) (string, error) {
 	return path, nil
 }
 
-// runGoToolPprof saves the raw profile and runs `go tool pprof -text <file>` to get readable output.
+// runGoToolPprof saves the profile and runs `go tool pprof -text` to get human-readable output.
+// It writes to a temp text file and reads back the result to avoid TTY/format issues.
 func runGoToolPprof(rawData []byte, filename string) (string, bool, error) {
 	tmpDir := filepath.Join(".", "tmp")
 	if err := os.MkdirAll(tmpDir, 0755); err != nil {
 		return "", false, fmt.Errorf("failed to create tmp dir: %w", err)
 	}
 	profPath := filepath.Join(tmpDir, "pprof_"+filepath.Base(filename))
+	textOutPath := filepath.Join(tmpDir, "pprof_text_"+filepath.Base(filename)+".txt")
+
 	if err := os.WriteFile(profPath, rawData, 0644); err != nil {
 		return "", false, fmt.Errorf("failed to write temp file: %w", err)
 	}
 	defer os.Remove(profPath)
+	defer os.Remove(textOutPath)
 
-	// Find go binary and its GOROOT
+	// Find go binary and set up environment
 	goBin, err := exec.LookPath("go")
 	if err != nil {
-		log.Printf("[ERROR] go binary not found in PATH: %v", err)
+		log.Printf("[ERROR] go not found in PATH: %v", err)
 		hex := formatHexDump(rawData)
 		return hex, false, fmt.Errorf("go not found in PATH")
 	}
 
-	// Get GOROOT from go env
 	gorootCmd := exec.Command(goBin, "env", "GOROOT")
-	gorootOut, err := gorootCmd.Output()
-	var goroot string
-	if err == nil {
-		goroot = strings.TrimSpace(string(gorootOut))
-		log.Printf("[INFO] GOROOT=%s", goroot)
-	} else {
-		goroot = filepath.Dir(filepath.Dir(goBin)) // fallback: <go-bin>/../..
-		log.Printf("[WARN] failed to get GOROOT, using fallback: %s", goroot)
-	}
-
-	// Build clean environment with GOROOT set
+	gorootOut, _ := gorootCmd.Output()
+	goroot := strings.TrimSpace(string(gorootOut))
 	env := os.Environ()
-	env = append(env, "GOROOT="+goroot)
-	cmdEnv := env
-
-	// Run: go tool pprof -text <profPath>
-	log.Printf("[INFO] running: %s tool pprof -text %s", goBin, profPath)
-	cmd := exec.Command(goBin, "tool", "pprof", "-text", profPath)
-	cmd.Env = cmdEnv
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		errMsg := strings.TrimSpace(string(out))
-		if errMsg == "" {
-			errMsg = err.Error()
-		}
-		log.Printf("[WARN] go tool pprof -text failed: %s", errMsg)
-
-		// Try -raw as fallback
-		cmd = exec.Command(goBin, "tool", "pprof", "-raw", profPath)
-		cmd.Env = cmdEnv
-		out, err = cmd.CombinedOutput()
-		if err == nil && len(out) > 0 {
-			log.Printf("[INFO] go tool pprof -raw succeeded, output length: %d", len(out))
-			return string(out), true, nil
-		}
-		log.Printf("[WARN] go tool pprof -raw also failed: %v", err)
-
-		// Fallback to hex dump
-		hex := formatHexDump(rawData)
-		return hex, false, nil
+	if goroot != "" {
+		env = append(env, "GOROOT="+goroot)
 	}
 
-	log.Printf("[INFO] go tool pprof -text succeeded, output length: %d", len(out))
-	return string(out), true, nil
+	// Use -text -output to write directly to file, bypassing TTY issues
+	cmd := exec.Command(goBin, "tool", "pprof", "-text", "-output", textOutPath, profPath)
+	cmd.Env = env
+	cmd.Dir = tmpDir
+	outBytes, err := cmd.CombinedOutput()
+	outStr := string(outBytes)
+	log.Printf("[INFO] go tool pprof -text -output: err=%v output_len=%d output=%q", err, len(outStr), outStr)
+
+	// Read back the text output file
+	textOut, err := os.ReadFile(textOutPath)
+	if err == nil && len(textOut) > 0 {
+		result := string(textOut)
+		if isPrintableASCII(result) {
+			log.Printf("[INFO] pprof text file read: %d bytes", len(result))
+			return result, true, nil
+		}
+		log.Printf("[WARN] pprof text file not readable ASCII, falling back")
+	}
+
+	// Fallback: try -raw which outputs proto in text format
+	cmd = exec.Command(goBin, "tool", "pprof", "-raw", profPath)
+	cmd.Env = env
+	cmd.Dir = tmpDir
+	rawOut, err := cmd.CombinedOutput()
+	if err == nil && len(rawOut) > 0 {
+		result := parsePprofRawOutput(string(rawOut))
+		if result != "" {
+			log.Printf("[INFO] pprof -raw parsed: %d bytes", len(result))
+			return result, true, nil
+		}
+	}
+
+	// Last resort: hex dump
+	hex := formatHexDump(rawData)
+	log.Printf("[WARN] pprof conversion failed, using hex dump fallback")
+	return hex, false, nil
+}
+
+// parsePprofRawOutput parses the raw proto text format output by `go tool pprof -raw`
+// and extracts human-readable profile data.
+func parsePprofRawOutput(raw string) string {
+	var sb strings.Builder
+	lines := strings.Split(raw, "\n")
+
+	// Check if it looks like actual profile data (not binary)
+	goodLines := 0
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		// Accept lines that are printable ASCII and contain useful profile info
+		if isPrintableASCII(trimmed) &&
+			(strings.Contains(trimmed, ":") || strings.Contains(trimmed, "0x") ||
+			 strings.HasPrefix(trimmed, "---") || strings.HasPrefix(trimmed, "=") ||
+			 len(trimmed) > 3)) {
+			goodLines++
+			sb.WriteString(trimmed)
+			sb.WriteString("\n")
+		}
+	}
+
+	if goodLines > 0 && sb.Len() > 50 {
+		return sb.String()
+	}
+	return ""
 }
 
 // formatHexDump returns a hex dump of the data with ASCII representation.
