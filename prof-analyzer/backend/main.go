@@ -147,7 +147,7 @@ func saveJSON(v interface{}, prefix, ext string) (string, error) {
 	return path, nil
 }
 
-// runGoToolPprof runs `go tool pprof -text` on the given raw data and returns the text output.
+// runGoToolPprof saves the raw profile and runs `go tool pprof -text <file>` to get readable output.
 func runGoToolPprof(rawData []byte, filename string) (string, bool, error) {
 	tmpDir := filepath.Join(".", "tmp")
 	if err := os.MkdirAll(tmpDir, 0755); err != nil {
@@ -159,40 +159,33 @@ func runGoToolPprof(rawData []byte, filename string) (string, bool, error) {
 	}
 	defer os.Remove(profPath)
 
-	// Try: echo "text" | go tool pprof <file>  (stdin command style)
-	for _, cmdText := range []string{"text\n", "top\n"} {
-		cmd := exec.Command("go", "tool", "pprof")
-		cmd.Dir = tmpDir
-		cmd.Stdin = strings.NewReader(cmdText)
-		cmd.Args = append(cmd.Args, profPath)
-		out, err := cmd.CombinedOutput()
+	log.Printf("[INFO] running: go tool pprof -text %s", profPath)
+
+	cmd := exec.Command("go", "tool", "pprof", "-text", profPath)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		errMsg := strings.TrimSpace(string(out))
+		if errMsg == "" {
+			errMsg = err.Error()
+		}
+		log.Printf("[WARN] go tool pprof -text failed: %s", errMsg)
+
+		// Try -raw as fallback
+		cmd = exec.Command("go", "tool", "pprof", "-raw", profPath)
+		out, err = cmd.CombinedOutput()
 		if err == nil && len(out) > 0 {
+			log.Printf("[INFO] go tool pprof -raw succeeded")
 			return string(out), true, nil
 		}
-		log.Printf("[WARN] go tool pprof with stdin '%s' failed: %v", strings.TrimSpace(cmdText), err)
+		log.Printf("[WARN] go tool pprof -raw also failed: %v", err)
+
+		// Fallback to hex dump
+		hex := formatHexDump(rawData)
+		return hex, false, nil
 	}
 
-	// Try: go tool pprof -text <file>
-	cmd := exec.Command("go", "tool", "pprof", "-text", profPath)
-	cmd.Dir = tmpDir
-	out, err := cmd.CombinedOutput()
-	if err == nil && len(out) > 0 {
-		return string(out), true, nil
-	}
-	log.Printf("[WARN] go tool pprof -text failed: %v", err)
-
-	// Try raw
-	cmd = exec.Command("go", "tool", "pprof", "-raw", profPath)
-	cmd.Dir = tmpDir
-	out, err = cmd.CombinedOutput()
-	if err == nil && len(out) > 0 {
-		return string(out), true, nil
-	}
-	log.Printf("[WARN] go tool pprof -raw failed: %v", err)
-
-	// Fallback: hex dump
-	hex := formatHexDump(rawData)
-	return hex, false, nil
+	log.Printf("[INFO] go tool pprof -text succeeded, output length: %d", len(out))
+	return string(out), true, nil
 }
 
 // formatHexDump returns a hex dump of the data with ASCII representation.
