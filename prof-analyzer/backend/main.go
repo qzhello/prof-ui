@@ -337,7 +337,18 @@ func handleAnalyze(c *gin.Context) {
 		if err != nil {
 			log.Printf("[WARN] handleAnalyze: pprof conversion failed for %s: %v", f.Filename, err)
 		} else if !ok {
-			log.Printf("[INFO] handleAnalyze: go tool pprof unavailable for %s, using hex dump", f.Filename)
+			log.Printf("[WARN] handleAnalyze: go tool pprof unavailable for %s, using hex dump", f.Filename)
+		}
+
+		// Log preview of what we're sending to AI
+		preview := pprofText
+		if len(preview) > 300 {
+			preview = preview[:300] + "..."
+		}
+		if ok {
+			log.Printf("[INFO] handleAnalyze: pprof text preview for %s:\n%s", f.Filename, preview)
+		} else {
+			log.Printf("[INFO] handleAnalyze: hex dump preview for %s:\n%s", f.Filename, preview)
 		}
 		analysisTexts = append(analysisTexts, pprofText)
 	}
@@ -417,8 +428,13 @@ func handleAnalyzeStream(c *gin.Context) {
 		if err != nil {
 			log.Printf("[WARN] handleAnalyzeStream: pprof conversion failed for %s: %v", f.Filename, err)
 		} else if !ok {
-			log.Printf("[INFO] handleAnalyzeStream: go tool pprof unavailable for %s, using hex dump", f.Filename)
+			log.Printf("[WARN] handleAnalyzeStream: go tool pprof unavailable for %s, using hex dump", f.Filename)
 		}
+		preview := pprofText
+		if len(preview) > 200 {
+			preview = preview[:200] + "..."
+		}
+		log.Printf("[INFO] handleAnalyzeStream: sending to AI (isPprofText=%v): %s", ok, preview)
 		analysisTexts = append(analysisTexts, pprofText)
 	}
 
