@@ -100,3 +100,70 @@ cd backend && go build -o prof-analyzer && ./prof-analyzer
 ### GET /api/health
 
 健康检查
+
+## 示例文件
+
+PROF 分析支持以下格式，以下是示例内容：
+
+### 1. Go pprof CPU profile (text 格式)
+
+```
+--- cpu ---
+Duration: 30s, Total samples: 1200
+
+flat  flat%   sum%     cum     cum%  function
+45ms  3.75%  3.75%    120ms   10%   database.Query
+30ms  2.50%  6.25%    80ms    6.67% json.Marshal
+25ms  2.08%  8.33%    25ms    2.08% redis.Get
+20ms  1.67%  10.00%   45ms    3.75% handler.ServeHTTP
+15ms  1.25%  11.25%   15ms    1.25% log.Printf
+```
+
+### 2. JSON 格式性能数据
+
+```json
+{
+  "type": "pprof",
+  "duration_ms": 30000,
+  "samples": [
+    {
+      "function": "database.Query",
+      "location": "db.go:45",
+      "time_ms": 45,
+      "count": 100
+    },
+    {
+      "function": "json.Marshal",
+      "location": "json.go:123",
+      "time_ms": 30,
+      "count": 500
+    },
+    {
+      "function": "redis.Get",
+      "location": "cache.go:67",
+      "time_ms": 25,
+      "count": 200
+    }
+  ],
+  "metrics": {
+    "goroutines": 150,
+    "memory_mb": 256,
+    "gc_count": 12,
+    "gc_pause_ms": 8
+  }
+}
+```
+
+### 3. Trace 格式日志
+
+```
+[0.000s] HTTP request received: /api/users
+[0.015s] Middleware: auth validation
+[0.020s] Database query started
+[0.065s] Database query completed (45ms)
+[0.070s] JSON serialization started
+[0.090s] JSON serialization completed (20ms)
+[0.092s] Response sent (92ms)
+```
+
+上传任意上述格式文件，AI 将自动分析并输出包含**调用链路**、**问题根因**、**解决建议**的完整报告。
