@@ -234,7 +234,7 @@ func parsePprofRawOutput(raw string) string {
 		if isPrintableASCII(trimmed) &&
 			(strings.Contains(trimmed, ":") || strings.Contains(trimmed, "0x") ||
 			 strings.HasPrefix(trimmed, "---") || strings.HasPrefix(trimmed, "=") ||
-			 len(trimmed) > 3)) {
+			 len(trimmed) > 3) {
 			goodLines++
 			sb.WriteString(trimmed)
 			sb.WriteString("\n")
