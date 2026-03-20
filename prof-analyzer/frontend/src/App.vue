@@ -85,6 +85,7 @@ async function startStreamingAnalysis() {
 
     const decoder = new TextDecoder()
     let buffer = ''
+    let currentEvent = ''
 
     while (true) {
       const { done, value } = await reader.read()
@@ -95,20 +96,21 @@ async function startStreamingAnalysis() {
       buffer = lines.pop() || ''
 
       for (const line of lines) {
-        if (line.startsWith('data: ')) {
+        if (line.startsWith('event: ')) {
+          currentEvent = line.slice(7).trim()
+        } else if (line.startsWith('data: ')) {
           const data = line.slice(6).trim()
-          if (data === '' || data === '[DONE]') continue
+          if (!data || data === '[DONE]') continue
 
-          try {
-            const parsed = JSON.parse(data)
-            if (parsed.event === 'chunk' && parsed.data) {
-              streamingOutput.value += parsed.data
-            } else if (parsed.event === 'error') {
-              errorMessage.value = parsed.data || 'Stream error'
-            }
-          } catch {
-            // ignore parse errors
+          if (currentEvent === 'chunk') {
+            streamingOutput.value += data
+          } else if (currentEvent === 'error') {
+            errorMessage.value = data
           }
+        }
+        // reset event after processing
+        if (line === '' || line.startsWith('event: ')) {
+          currentEvent = ''
         }
       }
     }
