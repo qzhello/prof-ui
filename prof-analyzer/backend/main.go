@@ -400,7 +400,6 @@ func handleAnalyzeStream(c *gin.Context) {
 	}
 
 	reader := resp.Body
-	buf := make([]byte, 0, 1024)
 	lineBuf := []byte{}
 
 	for {
