@@ -382,6 +382,10 @@ func handleAnalyze(c *gin.Context) {
 
 	prompt := buildPrompt(fileNames, analysisTexts, c.PostForm("source_path"))
 
+	// Log full prompt so user can verify what's being sent to AI
+	log.Printf("[INFO] ===== PROMPT SENT TO AI =====")
+	log.Printf("%s", prompt)
+	log.Printf("[INFO] ===== END OF PROMPT =====")
 	log.Printf("[INFO] handleAnalyze: calling AI model=%s files=%v", model, fileNames)
 	analysis, err := callAI(apiKey, baseURL, model, prompt)
 	if err != nil {
@@ -466,6 +470,10 @@ func handleAnalyzeStream(c *gin.Context) {
 	}
 
 	prompt := buildPrompt(fileNames, analysisTexts, c.PostForm("source_path"))
+
+	log.Printf("[INFO] ===== STREAMING PROMPT SENT TO AI =====")
+	log.Printf("%s", prompt)
+	log.Printf("[INFO] ===== END OF PROMPT =====")
 
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
