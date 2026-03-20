@@ -18,11 +18,6 @@ import (
 	"github.com/joho/godotenv"
 )
 
-type AnalysisRequest struct {
-	SourcePath string `form:"source_path"`
-	Model      string `form:"model"`
-}
-
 type AnalysisResult struct {
 	Summary    string      `json:"summary"`
 	Chain      []ChainLink `json:"chain"`
@@ -121,7 +116,7 @@ func main() {
 	r.POST("/api/analyze", handleAnalyze)
 	r.POST("/api/analyze/stream", handleAnalyzeStream)
 	r.POST("/api/save-result", handleSaveResult)
-	r.POST("/api/pprof/image", handlePprofImage)
+	r.POST("/api/pprof/text", handlePprofText)
 	r.GET("/api/health", handleHealth)
 
 	log.Printf("Server starting on :%s", port)
@@ -152,108 +147,103 @@ func saveJSON(v interface{}, prefix, ext string) (string, error) {
 	return path, nil
 }
 
-// handleSaveResult saves a complete analysis result JSON to ./output/
-func handleSaveResult(c *gin.Context) {
-	var result AnalysisResult
-	if err := c.ShouldBindJSON(&result); err != nil {
-		log.Printf("[ERROR] handleSaveResult: failed to bind JSON: %v", err)
-		c.JSON(400, gin.H{"error": "invalid JSON: " + err.Error()})
-		return
+// runGoToolPprof runs `go tool pprof -text` on the given raw data and returns the text output.
+func runGoToolPprof(rawData []byte, filename string) (string, error) {
+	tmpDir := os.TempDir()
+	profPath := filepath.Join(tmpDir, "pprof_"+filename)
+
+	if err := os.WriteFile(profPath, rawData, 0644); err != nil {
+		return "", fmt.Errorf("failed to write temp file: %w", err)
+	}
+	defer os.Remove(profPath)
+
+	var stdout, stderr []byte
+	var err error
+
+	// Try -text first (most readable)
+	for _, args := range [][]string{
+		{"tool", "pprof", "-text", profPath},
+		{"tool", "pprof", "-callgrind", profPath},
+		{"tool", "pprof", "-raw", profPath},
+	} {
+		cmd := exec.Command("go", args...)
+		cmd.Dir = tmpDir
+		stdout, err = cmd.CombinedOutput()
+		if err == nil && len(stdout) > 0 {
+			return string(stdout), nil
+		}
+		log.Printf("[WARN] go pprof %v failed: %v, output: %s", args, err, string(stdout)+string(stderr))
 	}
 
-	resultPath, err := saveJSON(result, "analysis_stream", "json")
-	if err != nil {
-		log.Printf("[ERROR] handleSaveResult: failed to save: %v", err)
-		c.JSON(500, gin.H{"error": "failed to save result: " + err.Error()})
-		return
-	}
-
-	log.Printf("[INFO] Streaming analysis result saved to: %s", resultPath)
-	c.JSON(200, gin.H{
-		"success":     true,
-		"result_path": resultPath,
-		"result_url":  "/" + resultPath,
-	})
+	// Fallback: return raw data as string
+	return string(rawData), fmt.Errorf("go tool pprof failed, returning raw data")
 }
 
-func handlePprofImage(c *gin.Context) {
+// handlePprofText runs pprof text analysis on the uploaded file and returns the text.
+func handlePprofText(c *gin.Context) {
 	file, err := c.FormFile("file")
 	if err != nil {
-		log.Printf("[ERROR] handlePprofImage: no file: %v", err)
 		c.JSON(400, gin.H{"error": "no file uploaded"})
 		return
 	}
 
 	if file.Size > 100*1024*1024 {
-		c.JSON(400, gin.H{"error": "file too large, max 100MB"})
+		c.JSON(400, gin.H{"error": "file too large"})
 		return
 	}
-
-	tmpDir := os.TempDir()
-	profPath := filepath.Join(tmpDir, "pprof_"+filepath.Base(file.Filename))
-	pngPath := outputPath("pprof", "png")
-	svgPath := outputPath("pprof", "svg")
 
 	f, err := file.Open()
 	if err != nil {
-		log.Printf("[ERROR] handlePprofImage: failed to open file: %v", err)
 		c.JSON(500, gin.H{"error": "failed to open file"})
 		return
 	}
-	data, err := io.ReadAll(f)
+	rawData, err := io.ReadAll(f)
 	f.Close()
 	if err != nil {
-		log.Printf("[ERROR] handlePprofImage: failed to read file: %v", err)
 		c.JSON(500, gin.H{"error": "failed to read file"})
 		return
 	}
-	if err := os.WriteFile(profPath, data, 0644); err != nil {
-		log.Printf("[ERROR] handlePprofImage: failed to write temp file: %v", err)
-		c.JSON(500, gin.H{"error": "failed to save temp file"})
-		return
-	}
-	defer os.Remove(profPath)
 
-	var out []byte
-	savedPath := ""
-
-	for _, format := range []string{"-png", "-svg"} {
-		cmd := exec.Command("go", "tool", "pprof", format, profPath)
-		cmd.Dir = tmpDir
-		out, err = cmd.Output()
-		if err == nil && len(out) > 0 {
-			if format == "-png" {
-				savedPath = pngPath
-			} else {
-				savedPath = svgPath
-			}
-			break
-		}
-		log.Printf("[WARN] handlePprofImage: go tool pprof %s failed: %v, output: %s", format, err, string(out))
+	log.Printf("[INFO] handlePprofText: processing %s (%d bytes)", file.Filename, len(rawData))
+	text, err := runGoToolPprof(rawData, filepath.Base(file.Filename))
+	if err != nil {
+		log.Printf("[ERROR] handlePprofText: %v", err)
 	}
 
-	if savedPath == "" {
-		errMsg := strings.TrimSpace(string(out))
-		if errMsg == "" {
-			errMsg = err.Error()
-		}
-		log.Printf("[ERROR] handlePprofImage: pprof generation failed: %s", errMsg)
-		c.JSON(400, gin.H{"error": "go tool pprof failed: " + errMsg})
-		return
-	}
+	// Save text output
+	textPath := outputPath("pprof_text", "txt")
+	os.WriteFile(textPath, []byte(text), 0644)
+	log.Printf("[INFO] handlePprofText: text saved to %s", textPath)
 
-	if err := os.WriteFile(savedPath, out, 0644); err != nil {
-		log.Printf("[ERROR] handlePprofImage: failed to save image: %v", err)
-		c.JSON(500, gin.H{"error": "failed to save pprof image: " + err.Error()})
-		return
-	}
-
-	log.Printf("[INFO] Pprof image saved to: %s", savedPath)
 	c.JSON(200, gin.H{
-		"success": true,
-		"path":    savedPath,
-		"url":     "/" + savedPath,
-		"message": "图片已保存到: " + savedPath,
+		"success":  true,
+		"text":    text,
+		"path":    textPath,
+		"message": "已用 go tools 分析，结果已保存",
+	})
+}
+
+// handleSaveResult saves a complete analysis result JSON to ./output/
+func handleSaveResult(c *gin.Context) {
+	var result AnalysisResult
+	if err := c.ShouldBindJSON(&result); err != nil {
+		log.Printf("[ERROR] handleSaveResult: %v", err)
+		c.JSON(400, gin.H{"error": "invalid JSON: " + err.Error()})
+		return
+	}
+
+	resultPath, err := saveJSON(result, "analysis", "json")
+	if err != nil {
+		log.Printf("[ERROR] handleSaveResult: %v", err)
+		c.JSON(500, gin.H{"error": "failed to save: " + err.Error()})
+		return
+	}
+
+	log.Printf("[INFO] Analysis result saved to: %s", resultPath)
+	c.JSON(200, gin.H{
+		"success":     true,
+		"result_path": resultPath,
+		"result_url":  "/" + resultPath,
 	})
 }
 
@@ -269,14 +259,12 @@ func handleAnalyze(c *gin.Context) {
 	}
 
 	if apiKey == "" {
-		log.Printf("[ERROR] handleAnalyze: AI_API_KEY is not set")
 		c.JSON(500, gin.H{"error": "AI_API_KEY not configured"})
 		return
 	}
 
 	form, err := c.MultipartForm()
 	if err != nil {
-		log.Printf("[ERROR] handleAnalyze: failed to parse form: %v", err)
 		c.JSON(400, gin.H{"error": "failed to parse form: " + err.Error()})
 		return
 	}
@@ -287,31 +275,35 @@ func handleAnalyze(c *gin.Context) {
 		return
 	}
 
-	var fileContents []string
+	var analysisTexts []string
 	var fileNames []string
+
 	for _, f := range files {
 		fileNames = append(fileNames, f.Filename)
 		src, err := f.Open()
 		if err != nil {
-			log.Printf("[ERROR] handleAnalyze: failed to open file %s: %v", f.Filename, err)
 			c.JSON(500, gin.H{"error": "failed to read file"})
 			return
 		}
-		content, err := io.ReadAll(src)
+		rawData, err := io.ReadAll(src)
 		src.Close()
 		if err != nil {
-			log.Printf("[ERROR] handleAnalyze: failed to read file %s: %v", f.Filename, err)
 			c.JSON(500, gin.H{"error": "failed to read file content"})
 			return
 		}
-		fileContents = append(fileContents, string(content))
+
+		// Convert binary pprof to text using go tool pprof
+		pprofText, err := runGoToolPprof(rawData, f.Filename)
+		if err != nil {
+			log.Printf("[WARN] handleAnalyze: pprof conversion failed for %s: %v", f.Filename, err)
+		}
+		analysisTexts = append(analysisTexts, pprofText)
 	}
 
-	sourcePath := c.PostForm("source_path")
-	combinedContent := buildPrompt(fileNames, fileContents, sourcePath)
+	prompt := buildPrompt(fileNames, analysisTexts, c.PostForm("source_path"))
 
-	log.Printf("[INFO] handleAnalyze: calling AI model=%s, files=%v", model, fileNames)
-	analysis, err := callAI(apiKey, baseURL, model, combinedContent)
+	log.Printf("[INFO] handleAnalyze: calling AI model=%s files=%v", model, fileNames)
+	analysis, err := callAI(apiKey, baseURL, model, prompt)
 	if err != nil {
 		log.Printf("[ERROR] handleAnalyze: AI call failed: %v", err)
 		c.JSON(500, gin.H{"error": "analysis failed: " + err.Error()})
@@ -326,33 +318,32 @@ func handleAnalyze(c *gin.Context) {
 	}
 
 	c.JSON(200, gin.H{
-		"success":    true,
-		"data":       analysis,
-		"result_url": "/" + resultPath,
+		"success":     true,
+		"data":        analysis,
+		"result_url":  "/" + resultPath,
 		"result_path": resultPath,
 	})
 }
 
+// handleAnalyzeStream: first converts pprof to text, then streams AI response token by token
 func handleAnalyzeStream(c *gin.Context) {
 	model := os.Getenv("AI_MODEL")
 	if model == "" {
 		model = "gpt-4o"
 	}
+	apiKey := os.Getenv("AI_API_KEY")
 	baseURL := os.Getenv("AI_BASE_URL")
 	if baseURL == "" {
 		baseURL = "https://api.openai.com/v1"
 	}
-	apiKey := os.Getenv("AI_API_KEY")
 
 	if apiKey == "" {
-		log.Printf("[ERROR] handleAnalyzeStream: AI_API_KEY is not set")
 		c.JSON(500, gin.H{"error": "AI_API_KEY not configured"})
 		return
 	}
 
 	form, err := c.MultipartForm()
 	if err != nil {
-		log.Printf("[ERROR] handleAnalyzeStream: failed to parse form: %v", err)
 		c.JSON(400, gin.H{"error": "failed to parse form: " + err.Error()})
 		return
 	}
@@ -363,32 +354,48 @@ func handleAnalyzeStream(c *gin.Context) {
 		return
 	}
 
-	var fileContents []string
+	var analysisTexts []string
 	var fileNames []string
+
 	for _, f := range files {
 		fileNames = append(fileNames, f.Filename)
 		src, err := f.Open()
 		if err != nil {
-			log.Printf("[ERROR] handleAnalyzeStream: failed to open file %s: %v", f.Filename, err)
 			c.JSON(500, gin.H{"error": "failed to read file"})
 			return
 		}
-		content, err := io.ReadAll(src)
+		rawData, err := io.ReadAll(src)
 		src.Close()
 		if err != nil {
-			log.Printf("[ERROR] handleAnalyzeStream: failed to read file %s: %v", f.Filename, err)
 			c.JSON(500, gin.H{"error": "failed to read file content"})
 			return
 		}
-		fileContents = append(fileContents, string(content))
+
+		pprofText, err := runGoToolPprof(rawData, f.Filename)
+		if err != nil {
+			log.Printf("[WARN] handleAnalyzeStream: pprof conversion failed for %s: %v", f.Filename, err)
+		}
+		analysisTexts = append(analysisTexts, pprofText)
 	}
 
-	sourcePath := c.PostForm("source_path")
-	prompt := buildPrompt(fileNames, fileContents, sourcePath)
+	prompt := buildPrompt(fileNames, analysisTexts, c.PostForm("source_path"))
 
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
-	c.Header("Connection", "keep-alive")
+	c.Header("X-Accel-Buffering", "no")
+
+	flush := func() {
+		if fw, ok := c.Writer.(http.Flusher); ok {
+			fw.Flush()
+		}
+	}
+
+	send := func(event, data string) {
+		c.Writer.Write([]byte(fmt.Sprintf("event: %s\ndata: %s\n\n", event, data)))
+		flush()
+	}
+
+	send("status", "开始分析...")
 
 	payload := AIRequest{
 		Model: model,
@@ -401,13 +408,13 @@ func handleAnalyzeStream(c *gin.Context) {
 
 	jsonData, err := json.Marshal(payload)
 	if err != nil {
-		log.Printf("[ERROR] handleAnalyzeStream: failed to marshal request: %v", err)
+		send("error", "failed to marshal request: "+err.Error())
 		return
 	}
 
 	req, err := http.NewRequest("POST", baseURL+"/chat/completions", bytes.NewBuffer(jsonData))
 	if err != nil {
-		log.Printf("[ERROR] handleAnalyzeStream: failed to create request: %v", err)
+		send("error", "failed to create request: "+err.Error())
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
@@ -416,31 +423,22 @@ func handleAnalyzeStream(c *gin.Context) {
 	log.Printf("[INFO] handleAnalyzeStream: calling AI model=%s files=%v", model, fileNames)
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		errMsg := "AI request failed: " + err.Error()
-		log.Printf("[ERROR] handleAnalyzeStream: %s", errMsg)
-		c.String(http.StatusInternalServerError, "event: error\ndata: %s\n\n", errMsg)
+		send("error", "AI request failed: "+err.Error())
 		return
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != 200 {
 		body, _ := io.ReadAll(resp.Body)
-		errMsg := fmt.Sprintf("AI API error %d: %s", resp.StatusCode, string(body))
-		log.Printf("[ERROR] handleAnalyzeStream: %s", errMsg)
-		c.String(http.StatusInternalServerError, "event: error\ndata: %s\n\n", errMsg)
+		send("error", fmt.Sprintf("AI API error %d: %s", resp.StatusCode, string(body)))
 		return
 	}
 
-	// Gin SSEvent format: "event: <name>\ndata: <content>\n\n"
-	// We write manually to have full control
-	flush := func() {
-		if fw, ok := c.Writer.(http.Flusher); ok {
-			fw.Flush()
-		}
-	}
+	send("status", "AI 正在分析...")
 
 	reader := resp.Body
 	lineBuf := []byte{}
+	accumulated := ""
 
 	for {
 		b := make([]byte, 1)
@@ -455,23 +453,15 @@ func handleAnalyzeStream(c *gin.Context) {
 		line := string(lineBuf)
 		lineBuf = lineBuf[:0]
 
-		if strings.HasPrefix(line, "event: ") {
-			// Gin's SSE sends "event: <name>\ndata: <json>\n\n"
-			// Next line should be "data: ..."
-			continue
-		}
-
 		if !strings.HasPrefix(line, "data: ") {
 			continue
 		}
 		data := strings.TrimPrefix(line, "data: ")
 		data = strings.TrimSpace(data)
-
-		if data == "[DONE]" || data == "" {
+		if data == "" || data == "[DONE]" {
 			continue
 		}
 
-		// Parse SSE data to extract content delta
 		var sseData struct {
 			Choices []struct {
 				Delta struct {
@@ -480,39 +470,61 @@ func handleAnalyzeStream(c *gin.Context) {
 			} `json:"choices"`
 		}
 		if err := json.Unmarshal([]byte(data), &sseData); err != nil {
-			// might be a ping or other event
 			continue
 		}
-		if len(sseData.Choices) > 0 && sseData.Choices[0].Delta.Content != "" {
-			content := sseData.Choices[0].Delta.Content
-			c.Writer.Write([]byte(fmt.Sprintf("event: chunk\ndata: %s\n\n", content)))
-			flush()
+		if len(sseData.Choices) == 0 {
+			continue
+		}
+
+		token := sseData.Choices[0].Delta.Content
+		if token == "" {
+			continue
+		}
+
+		accumulated += token
+
+		// Escape newlines for SSE transport
+		escaped := strings.ReplaceAll(token, "\n", "\\n")
+		escaped = strings.ReplaceAll(escaped, "\r", "\\r")
+		send("chunk", escaped)
+	}
+
+	// Save the complete accumulated response
+	send("status", "正在保存结果...")
+	if accumulated != "" {
+		var result AnalysisResult
+		if err := json.Unmarshal([]byte(accumulated), &result); err == nil {
+			resultPath, err := saveJSON(result, "analysis_stream", "json")
+			if err == nil {
+				send("saved", resultPath)
+				log.Printf("[INFO] handleAnalyzeStream: result saved to %s", resultPath)
+			}
 		}
 	}
 
+	send("done", "")
 	log.Printf("[INFO] handleAnalyzeStream: stream finished")
 }
 
-func buildPrompt(fileNames, fileContents []string, sourcePath string) string {
+func buildPrompt(fileNames, analysisTexts []string, sourcePath string) string {
 	var sb strings.Builder
-	sb.WriteString("你是一个专业的性能分析专家。请分析以下PROF文件并提供详细的分析报告。\n\n")
+	sb.WriteString("你是一个专业的性能分析专家。以下是 PROF 文件经过 go tools 分析后的文本数据，请基于这些数据进行详细分析。\n\n")
 
 	if sourcePath != "" {
 		sb.WriteString(fmt.Sprintf("本地源码路径: %s\n\n", sourcePath))
 	}
 
-	sb.WriteString("=== 上传的文件 ===\n")
 	for i, name := range fileNames {
-		sb.WriteString(fmt.Sprintf("\n--- 文件 %d: %s ---\n", i+1, name))
-		content := fileContents[i]
-		if len(content) > 15000 {
-			content = content[:15000] + "\n... (内容过长已截断)"
+		sb.WriteString(fmt.Sprintf("=== 文件 %d: %s (go tools 分析结果) ===\n", i+1, name))
+		text := analysisTexts[i]
+		if len(text) > 20000 {
+			text = text[:20000] + "\n... (内容过长已截断)"
 		}
-		sb.WriteString(content)
+		sb.WriteString(text)
+		sb.WriteString("\n\n")
 	}
-	sb.WriteString("\n\n")
 
-	sb.WriteString(`请分析以上PROF文件数据，并返回JSON格式的分析结果，格式如下：
+	sb.WriteString(`请分析以上 PROF 分析数据，返回以下格式的 JSON（确保 JSON 可直接解析）：
 {
   "summary": "总体分析摘要，2-3句话",
   "chain": [
@@ -539,9 +551,7 @@ func buildPrompt(fileNames, fileContents []string, sourcePath string) string {
       {"name": "handler", "time_cost": "80ms", "calls": 10, "children": []}
     ]}
   ]
-}
-
-请确保JSON格式正确，可以直接解析。`)
+}`)
 
 	return sb.String()
 }
@@ -602,7 +612,7 @@ func callAI(apiKey, baseURL, model, content string) (*AnalysisResult, error) {
 
 	var result AnalysisResult
 	if err := json.Unmarshal([]byte(aiContent), &result); err != nil {
-		return nil, fmt.Errorf("failed to parse AI response as JSON: %w (content preview: %s)", err, aiContent[:min(200, len(aiContent))])
+		return nil, fmt.Errorf("failed to parse AI response as JSON: %w (preview: %s)", err, aiContent[:min(200, len(aiContent))])
 	}
 
 	return &result, nil

@@ -99,15 +99,24 @@ async function startStreamingAnalysis() {
         if (line.startsWith('event: ')) {
           currentEvent = line.slice(7).trim()
         } else if (line.startsWith('data: ')) {
-          const data = line.slice(6).trim()
+          let data = line.slice(6).trim()
           if (!data || data === '[DONE]') continue
 
-          if (currentEvent === 'chunk') {
+          if (currentEvent === 'status') {
+            // status message, ignore
+          } else if (currentEvent === 'chunk') {
+            // Unescape SSE escaped newlines and carriage returns
+            data = data.replace(/\\n/g, '\n').replace(/\\r/g, '\r')
             streamingOutput.value += data
           } else if (currentEvent === 'error') {
             errorMessage.value = data
+          } else if (currentEvent === 'saved') {
+            savedResultPath.value = data
+          } else if (currentEvent === 'done') {
+            // stream finished
           } else {
-            // Fallback: data without event prefix, treat as chunk
+            // fallback: treat as chunk
+            data = data.replace(/\\n/g, '\n').replace(/\\r/g, '\r')
             streamingOutput.value += data
           }
         } else if (line === '') {
@@ -342,7 +351,7 @@ function clearResults() {
           <div class="animate-pulse w-3 h-3 bg-green-400 rounded-full"></div>
           <h3 class="text-lg font-semibold text-green-400">AI 正在分析...</h3>
         </div>
-        <pre class="text-sm text-green-300 font-mono whitespace-pre-wrap overflow-x-auto max-h-96 leading-relaxed">{{ streamingOutput || '等待响应...' }}</pre>
+        <pre class="text-sm text-green-300 font-mono whitespace-pre-wrap overflow-x-auto max-h-[60vh] leading-relaxed bg-gray-900 p-4 rounded-lg">{{ streamingOutput || '等待响应...' }}</pre>
       </div>
 
       <!-- Result Tab -->
