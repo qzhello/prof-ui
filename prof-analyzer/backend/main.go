@@ -148,35 +148,66 @@ func saveJSON(v interface{}, prefix, ext string) (string, error) {
 }
 
 // runGoToolPprof runs `go tool pprof -text` on the given raw data and returns the text output.
-func runGoToolPprof(rawData []byte, filename string) (string, error) {
+func runGoToolPprof(rawData []byte, filename string) (string, bool, error) {
 	tmpDir := os.TempDir()
 	profPath := filepath.Join(tmpDir, "pprof_"+filename)
 
 	if err := os.WriteFile(profPath, rawData, 0644); err != nil {
-		return "", fmt.Errorf("failed to write temp file: %w", err)
+		return "", false, fmt.Errorf("failed to write temp file: %w", err)
 	}
 	defer os.Remove(profPath)
 
-	var stdout, stderr []byte
-	var err error
-
-	// Try -text first (most readable)
-	for _, args := range [][]string{
+	// Try different pprof invocation styles
+	styles := [][]string{
 		{"tool", "pprof", "-text", profPath},
-		{"tool", "pprof", "-callgrind", profPath},
 		{"tool", "pprof", "-raw", profPath},
-	} {
-		cmd := exec.Command("go", args...)
-		cmd.Dir = tmpDir
-		stdout, err = cmd.CombinedOutput()
-		if err == nil && len(stdout) > 0 {
-			return string(stdout), nil
-		}
-		log.Printf("[WARN] go pprof %v failed: %v, output: %s", args, err, string(stdout)+string(stderr))
+		{"tool", "pprof", profPath},
 	}
 
-	// Fallback: return raw data as string
-	return string(rawData), fmt.Errorf("go tool pprof failed, returning raw data")
+	var lastErr error
+	for _, args := range styles {
+		cmd := exec.Command("go", args...)
+		cmd.Dir = tmpDir
+		out, err := cmd.CombinedOutput()
+		if err == nil && len(out) > 0 {
+			return string(out), true, nil
+		}
+		lastErr = err
+		log.Printf("[WARN] go pprof %v failed: %v", args, err)
+	}
+
+	// go tool pprof not available — return raw data as hex dump (AI can parse hex)
+	hex := formatHexDump(rawData)
+	return hex, false, nil
+}
+
+// formatHexDump returns a hex dump of the data with ASCII representation.
+func formatHexDump(data []byte) string {
+	const linesize = 32
+	var sb strings.Builder
+	sb.WriteString("=== RAW PROFILE DATA (hex dump) ===\n")
+	for i := 0; i < len(data); i += linesize {
+		end := i + linesize
+		if end > len(data) {
+			end = len(data)
+		}
+		hex := ""
+		for j := i; j < end; j++ {
+			hex += fmt.Sprintf("%02x ", data[j])
+		}
+		ascii := ""
+		for j := i; j < end; j++ {
+			b := data[j]
+			if b >= 32 && b < 127 {
+				ascii += string(b)
+			} else {
+				ascii += "."
+			}
+		}
+		sb.WriteString(fmt.Sprintf("%08x  %-96s  %s\n", i, hex, ascii))
+	}
+	sb.WriteString("=================================\n")
+	return sb.String()
 }
 
 // handlePprofText runs pprof text analysis on the uploaded file and returns the text.
@@ -205,9 +236,11 @@ func handlePprofText(c *gin.Context) {
 	}
 
 	log.Printf("[INFO] handlePprofText: processing %s (%d bytes)", file.Filename, len(rawData))
-	text, err := runGoToolPprof(rawData, filepath.Base(file.Filename))
+	text, ok, err := runGoToolPprof(rawData, filepath.Base(file.Filename))
 	if err != nil {
 		log.Printf("[ERROR] handlePprofText: %v", err)
+	} else if !ok {
+		log.Printf("[WARN] handlePprofText: go tool pprof not available, using hex dump")
 	}
 
 	// Save text output
@@ -293,9 +326,11 @@ func handleAnalyze(c *gin.Context) {
 		}
 
 		// Convert binary pprof to text using go tool pprof
-		pprofText, err := runGoToolPprof(rawData, f.Filename)
+		pprofText, ok, err := runGoToolPprof(rawData, f.Filename)
 		if err != nil {
 			log.Printf("[WARN] handleAnalyze: pprof conversion failed for %s: %v", f.Filename, err)
+		} else if !ok {
+			log.Printf("[INFO] handleAnalyze: go tool pprof unavailable for %s, using hex dump", f.Filename)
 		}
 		analysisTexts = append(analysisTexts, pprofText)
 	}
@@ -371,9 +406,11 @@ func handleAnalyzeStream(c *gin.Context) {
 			return
 		}
 
-		pprofText, err := runGoToolPprof(rawData, f.Filename)
+		pprofText, ok, err := runGoToolPprof(rawData, f.Filename)
 		if err != nil {
 			log.Printf("[WARN] handleAnalyzeStream: pprof conversion failed for %s: %v", f.Filename, err)
+		} else if !ok {
+			log.Printf("[INFO] handleAnalyzeStream: go tool pprof unavailable for %s, using hex dump", f.Filename)
 		}
 		analysisTexts = append(analysisTexts, pprofText)
 	}
