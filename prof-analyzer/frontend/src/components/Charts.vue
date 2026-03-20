@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, watch } from 'vue'
+import { ref, onMounted, onUnmounted, watch } from 'vue'
 import * as echarts from 'echarts'
 import type { AnalysisResult } from '../types'
 
@@ -235,6 +235,14 @@ function handleResize() {
 onMounted(() => {
   initCharts()
   window.addEventListener('resize', handleResize)
+})
+
+onUnmounted(() => {
+  window.removeEventListener('resize', handleResize)
+  pieChart?.dispose()
+  barChart?.dispose()
+  hotspotChart?.dispose()
+  treeChart?.dispose()
 })
 
 watch(() => props.result, () => {

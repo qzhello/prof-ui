@@ -6,10 +6,8 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"mime/multipart"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/gin-contrib/cors"
@@ -81,7 +79,6 @@ type AIMessage struct {
 }
 
 type AIResponse struct {
-	ID      string   `json:"id"`
 	Choices []Choice `json:"choices"`
 }
 
@@ -378,43 +375,11 @@ func generateMockAnalysis() *AnalysisResult {
 	}
 }
 
+// handleExportPDF is a no-op since PDF generation is client-side.
+// Kept for potential future server-side PDF generation needs.
 func handleExportPDF(c *gin.Context) {
-	var req struct {
-		HTML string `json:"html"`
-	}
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(400, gin.H{"error": "invalid request"})
-		return
-	}
-
-	outputDir := "./output"
-	if err := os.MkdirAll(outputDir, 0755); err != nil {
-		c.JSON(500, gin.H{"error": "failed to create output dir"})
-		return
-	}
-
-	filename := fmt.Sprintf("report_%d.pdf", os.Getpid())
-	outputPath := filepath.Join(outputDir, filename)
-
 	c.JSON(200, gin.H{
-		"success":  true,
-		"download": "/output/" + filename,
+		"success": true,
+		"message": "PDF is generated client-side",
 	})
-}
-
-func saveUploadedFile(f *multipart.FileHeader, dst string) error {
-	src, err := f.Open()
-	if err != nil {
-		return err
-	}
-	defer src.Close()
-
-	out, err := os.Create(dst)
-	if err != nil {
-		return err
-	}
-	defer out.Close()
-
-	_, err = io.Copy(out, src)
-	return err
 }

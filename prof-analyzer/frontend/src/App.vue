@@ -17,9 +17,6 @@ const hasResult = computed(() => analysisResult.value !== null)
 
 function handleFilesSelected(files: UploadedFile[]) {
   uploadedFiles.value = files
-  if (files.length > 0 && activeTab.value === 'upload') {
-    // stay on upload tab
-  }
 }
 
 function handleSourcePathChange(path: string) {
