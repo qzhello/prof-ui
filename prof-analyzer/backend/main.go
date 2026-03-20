@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -19,14 +20,14 @@ import (
 )
 
 type AnalysisResult struct {
-	Summary    string      `json:"summary"`
-	Chain      []ChainLink `json:"chain"`
-	RootCause  string      `json:"root_cause"`
-	Solutions  []string    `json:"solutions"`
-	Metrics    Metrics     `json:"metrics"`
-	Charts     []ChartData `json:"charts"`
-	Hotspots   []Hotspot   `json:"hotspots"`
-	CallTree   []CallNode  `json:"call_tree"`
+	Summary   string      `json:"summary"`
+	Chain     []ChainLink `json:"chain"`
+	RootCause string      `json:"root_cause"`
+	Solutions []string    `json:"solutions"`
+	Metrics   Metrics     `json:"metrics"`
+	Charts    []ChartData `json:"charts"`
+	Hotspots  []Hotspot   `json:"hotspots"`
+	CallTree  []CallNode  `json:"call_tree"`
 }
 
 type ChainLink struct {
@@ -159,76 +160,46 @@ func runGoToolPprof(rawData []byte, filename string) (string, bool, error) {
 	}
 	defer os.Remove(profPath)
 
-	// Find go binary
-	goBin, err := exec.LookPath("go")
-	if err != nil {
-		log.Printf("[ERROR] go not found in PATH: %v", err)
+	// Find pprof binary via GOROOT env
+	goroot := os.Getenv("GOROOT")
+	if goroot == "" {
+		log.Printf("[ERROR] GOROOT not set")
 		hex := formatHexDump(rawData)
-		return hex, false, fmt.Errorf("go not found in PATH")
+		return hex, false, fmt.Errorf("GOROOT not set")
+	}
+	log.Printf("[INFO] GOROOT: %s", goroot)
+
+	goos := runtime.GOOS
+	goarch := runtime.GOARCH
+	gotoolDir := filepath.Join(goroot, "pkg", "tool", goos+"_"+goarch)
+	pprofBin := filepath.Join(gotoolDir, "pprof")
+	log.Printf("[INFO] pprof path: %s", pprofBin)
+
+	if _, err := os.Stat(pprofBin); err != nil {
+		log.Printf("[ERROR] pprof not found at: %s", pprofBin)
+		hex := formatHexDump(rawData)
+		return hex, false, fmt.Errorf("pprof not found")
 	}
 
-	// Get GOTOOLDIR to find the actual pprof tool path
-	gotoolDirCmd := exec.Command(goBin, "env", "GOTOOLDIR")
-	gotoolDirOut, err := gotoolDirCmd.Output()
-	gotoolDir := strings.TrimSpace(string(gotoolDirOut))
-	log.Printf("[INFO] go binary: %s, GOTOOLDIR: %s", goBin, gotoolDir)
-
-	// pprof tool is at $GOTOOLDIR/pprof
-	var pprofBin string
-	if gotoolDir != "" {
-		pprofBin = filepath.Join(gotoolDir, "pprof")
-		if _, err := os.Stat(pprofBin); err == nil {
-			log.Printf("[INFO] pprof tool found at: %s", pprofBin)
-		} else {
-			pprofBin = ""
-		}
-	}
-
-	// Build clean environment
-	env := os.Environ()
-	if gotoolDir != "" {
-		env = append(env, "GOTOOLDIR="+gotoolDir)
-	}
-
-	var out []byte
-	var cmdErr error
-
-	// Method 1: call pprof binary directly via GOTOOLDIR
-	if pprofBin != "" {
-		cmd := exec.Command(pprofBin, "-text", profPath)
-		cmd.Env = env
-		cmd.Dir = tmpDir
-		out, cmdErr = cmd.CombinedOutput()
-		if cmdErr == nil && len(out) > 0 {
-			result := strings.TrimSpace(string(out))
-			if isPrintableASCII(result) {
-				log.Printf("[INFO] pprof -text succeeded via direct binary, %d bytes", len(result))
-				return result, true, nil
-			}
-			log.Printf("[WARN] pprof direct output not readable ASCII")
-		} else {
-			log.Printf("[WARN] pprof binary failed: %v", cmdErr)
-		}
-	}
-
-	// Method 2: go tool pprof -text
-	cmd := exec.Command(goBin, "tool", "pprof", "-text", profPath)
-	cmd.Env = env
-	cmd.Dir = tmpDir
-	out, cmdErr = cmd.CombinedOutput()
+	// Method 1: pprof -raw
+	cmd := exec.Command(pprofBin, "-raw", profPath)
+	out, cmdErr := cmd.CombinedOutput()
 	if cmdErr == nil && len(out) > 0 {
-		result := strings.TrimSpace(string(out))
-		if isPrintableASCII(result) {
-			log.Printf("[INFO] go tool pprof -text succeeded, %d bytes", len(result))
+		result := parsePprofRawOutput(string(out))
+		if result != "" {
+			log.Printf("[INFO] pprof -raw parsed: %d bytes", len(result))
 			return result, true, nil
 		}
 	}
+	log.Printf("[WARN] pprof -raw failed: %v, trying -text", cmdErr)
 
-	// Method 3: go tool pprof -raw
-	cmd = exec.Command(goBin, "tool", "pprof", "-raw", profPath)
-	cmd.Env = env
-	cmd.Dir = tmpDir
+	// Method 2: pprof -text
+	cmd = exec.Command(pprofBin, "-text", profPath)
 	out, cmdErr = cmd.CombinedOutput()
+	if cmdErr == nil && len(out) > 0 {
+		log.Printf("[INFO] pprof -text output: %d bytes", len(out))
+		return string(out), true, nil
+	}
 	if cmdErr == nil && len(out) > 0 {
 		result := parsePprofRawOutput(string(out))
 		if result != "" {
@@ -255,15 +226,6 @@ func parsePprofRawOutput(raw string) string {
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "" {
 			continue
-		}
-		// Accept lines that are printable ASCII and contain useful profile info
-		if isPrintableASCII(trimmed) &&
-			(strings.Contains(trimmed, ":") || strings.Contains(trimmed, "0x") ||
-			 strings.HasPrefix(trimmed, "---") || strings.HasPrefix(trimmed, "=") ||
-			 len(trimmed) > 3) {
-			goodLines++
-			sb.WriteString(trimmed)
-			sb.WriteString("\n")
 		}
 	}
 
@@ -341,7 +303,7 @@ func handlePprofText(c *gin.Context) {
 	log.Printf("[INFO] handlePprofText: text saved to %s", textPath)
 
 	c.JSON(200, gin.H{
-		"success":  true,
+		"success": true,
 		"text":    text,
 		"path":    textPath,
 		"message": "已用 go tools 分析，结果已保存",
