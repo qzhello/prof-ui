@@ -159,9 +159,35 @@ func runGoToolPprof(rawData []byte, filename string) (string, bool, error) {
 	}
 	defer os.Remove(profPath)
 
-	log.Printf("[INFO] running: go tool pprof -text %s", profPath)
+	// Find go binary and its GOROOT
+	goBin, err := exec.LookPath("go")
+	if err != nil {
+		log.Printf("[ERROR] go binary not found in PATH: %v", err)
+		hex := formatHexDump(rawData)
+		return hex, false, fmt.Errorf("go not found in PATH")
+	}
 
-	cmd := exec.Command("go", "tool", "pprof", "-text", profPath)
+	// Get GOROOT from go env
+	gorootCmd := exec.Command(goBin, "env", "GOROOT")
+	gorootOut, err := gorootCmd.Output()
+	var goroot string
+	if err == nil {
+		goroot = strings.TrimSpace(string(gorootOut))
+		log.Printf("[INFO] GOROOT=%s", goroot)
+	} else {
+		goroot = filepath.Dir(filepath.Dir(goBin)) // fallback: <go-bin>/../..
+		log.Printf("[WARN] failed to get GOROOT, using fallback: %s", goroot)
+	}
+
+	// Build clean environment with GOROOT set
+	env := os.Environ()
+	env = append(env, "GOROOT="+goroot)
+	cmdEnv := env
+
+	// Run: go tool pprof -text <profPath>
+	log.Printf("[INFO] running: %s tool pprof -text %s", goBin, profPath)
+	cmd := exec.Command(goBin, "tool", "pprof", "-text", profPath)
+	cmd.Env = cmdEnv
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		errMsg := strings.TrimSpace(string(out))
@@ -171,10 +197,11 @@ func runGoToolPprof(rawData []byte, filename string) (string, bool, error) {
 		log.Printf("[WARN] go tool pprof -text failed: %s", errMsg)
 
 		// Try -raw as fallback
-		cmd = exec.Command("go", "tool", "pprof", "-raw", profPath)
+		cmd = exec.Command(goBin, "tool", "pprof", "-raw", profPath)
+		cmd.Env = cmdEnv
 		out, err = cmd.CombinedOutput()
 		if err == nil && len(out) > 0 {
-			log.Printf("[INFO] go tool pprof -raw succeeded")
+			log.Printf("[INFO] go tool pprof -raw succeeded, output length: %d", len(out))
 			return string(out), true, nil
 		}
 		log.Printf("[WARN] go tool pprof -raw also failed: %v", err)
