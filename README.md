@@ -29,3 +29,27 @@
 2. 快速开始
 3. API 接口
 4. 使用说明
+
+## 界面预览
+
+### 总览
+
+![Overview](./imgs/overview.png)
+
+### 分析报告
+
+![Analysis Report](./imgs/analysis_report.png)
+
+### 热点与建议
+
+![Hot Spot](./imgs/hot_spot.png)
+
+![Recommendations](./imgs/recommendations.png)
+
+### 火焰图
+
+![Flame Chart](./imgs/flame_chart.png)
+
+### PDF 导出
+
+![PDF Output](./imgs/pdf_output.png)
