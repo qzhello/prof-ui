@@ -62,9 +62,32 @@ func main() {
 		c.File("./frontend/dist/index.html")
 	})
 
-	r.POST("/api/analyze/stream", handleAnalyzeStream)
-	r.POST("/api/pprof/text", handlePprofText)
-	r.POST("/api/pprof/image", handlePprofImage)
+	// API Key 鉴权中间件
+	apiKey := os.Getenv("API_KEY")
+	if apiKey != "" {
+		authMiddleware := func(c *gin.Context) {
+			token := c.GetHeader("X-API-Key")
+			if token == "" {
+				token = c.Query("api_key")
+			}
+			if token != apiKey {
+				c.JSON(401, gin.H{"error": "Unauthorized: invalid or missing API key"})
+				c.Abort()
+				return
+			}
+			c.Next()
+		}
+		// 对 /api/ 路由应用鉴权，但 /api/health 可选
+		r.POST("/api/analyze/stream", authMiddleware, handleAnalyzeStream)
+		r.POST("/api/pprof/text", authMiddleware, handlePprofText)
+		r.POST("/api/pprof/image", authMiddleware, handlePprofImage)
+		log.Println("API Key authentication enabled")
+	} else {
+		r.POST("/api/analyze/stream", handleAnalyzeStream)
+		r.POST("/api/pprof/text", handlePprofText)
+		r.POST("/api/pprof/image", handlePprofImage)
+		log.Println("WARNING: API Key authentication is DISABLED (API_KEY not set)")
+	}
 	r.GET("/api/health", handleHealth)
 
 	log.Printf("Server starting on :%s", port)
